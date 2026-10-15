@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Livium — live state</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Agent Livium</h1>
+    <p class="sub">live state, read from the database and from real probes — nothing here is illustrative</p>
+  </div>
+  <div class="badges" id="badges"></div>
+  <button id="refresh" class="btn">Refresh now</button>
+</header>
+
+<main>
+  <section class="card wide">
+    <h2>Run a task</h2>
+    <div class="row">
+      <input id="objective" type="text" placeholder="objective, e.g. write notes.md summarising README.md and verify it exists" />
+      <button id="run" class="btn primary">Run</button>
+    </div>
+    <details>
+      <summary>Acceptance criteria (JSON)</summary>
+      <textarea id="criteria" rows="4" spellcheck="false">[
+  {"kind": "file_exists", "path": "notes.md"}
+]</textarea>
+      <p class="hint">The harness checks these for real after the model stops. A criterion that is not
+      machine-checkable stays <code>manual</code> and the task is reported as unverified.</p>
+    </details>
+    <div id="run-output" class="output hidden"></div>
+  </section>
+
+  <section class="card">
+    <h2>Guardian</h2>
+    <div id="guardian"></div>
+  </section>
+
+  <section class="card">
+    <h2>Model &amp; context budget</h2>
+    <div id="provider"></div>
+  </section>
+
+  <section class="card">
+    <h2>Execution boundary</h2>
+    <div id="isolation"></div>
+  </section>
+
+  <section class="card">
+    <h2>Permissions</h2>
+    <div id="permissions"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Capabilities <span class="hint-inline">proposed → experimental → validated → active</span></h2>
+    <div id="capabilities"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Memory</h2>
+    <div class="row">
+      <input id="memory-query" type="text" placeholder="search persistent memory…" />
+      <button id="memory-search" class="btn">Search</button>
+      <label class="check"><input id="memory-remember" type="checkbox" /> also store the query as a note</label>
+    </div>
+    <div id="memory"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Journal <span class="hint-inline">append-only, enforced by database triggers</span></h2>
+    <div class="row">
+      <select id="event-filter">
+        <option value="">all events</option>
+        <option value="boundary_violation">boundary violations</option>
+        <option value="model_reply">model replies</option>
+        <option value="tool_exec">command executions</option>
+        <option value="tool_write">file writes</option>
+        <option value="task_verified">verification runs</option>
+        <option value="capability_tested">capability tests</option>
+        <option value="guardian_freeze">guardian freezes</option>
+      </select>
+    </div>
+    <div id="events"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Tasks</h2>
+    <div id="tasks"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Measured cost per task <span class="hint-inline">the learning ledger, one row per task</span></h2>
+    <div id="ledger"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Context constructions <span class="hint-inline">what was included, what was dropped, and why</span></h2>
+    <div id="context"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Deferred work <span class="hint-inline">what was noticed during a task and kept for after it</span></h2>
+    <div id="discovery"></div>
+  </section>
+
+  <section class="card wide">
+    <h2>Integrity <span class="hint-inline">what is watched, what was detected, and what was done about it</span></h2>
+    <div id="integrity"></div>
+  </section>
+</main>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

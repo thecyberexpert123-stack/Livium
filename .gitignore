@@ -1,0 +1,18 @@
+# Livium runtime state: databases, workspaces, capability lab, evidence.
+# Configuration lives in the environment (.env.example documents it), never in the repo.
+.env
+.env.*
+!.env.example
+.livium/
+.livium-*/
+*.db
+*.db-wal
+*.db-shm
+.venv/
+__pycache__/
+*.py[cod]
+
+# React/Vite development dependencies and caches (ui/public is the checked-in build).
+ui/node_modules/
+ui/.vite/
+ui/coverage/
