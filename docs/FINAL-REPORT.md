@@ -1,5 +1,5 @@
 AGENT LIVIUM — FINAL REPORT
-generated 2026-10-15T07:18:40+0000
+generated 2026-10-15T07:19:45+0000
 repository /home/user/Livium
 home /tmp/live
 provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.openai.com/v1 is unreachable at https://api.openai.com/v1: TLS/SSL connection has been closed (EOF) (_ssl.c:992). Check network egress and LIVIUM_BASE_URL.)
@@ -17,13 +17,13 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
 
  3. WHAT IS VERIFIED, AND HOW
     211 test methods across 14 modules; each asserts observed behaviour against real storage and real subprocesses.
-    Last recorded full-suite run: 211 tests, exit code 0 (0 min old).
-    Journal: 90 events, 0 observed boundary violation(s), 0 refused git operation(s), 24 real provider probe(s).
+    Last recorded full-suite run: 211 tests, exit code 0 (1 min old).
+    Journal: 97 events, 0 observed boundary violation(s), 0 refused git operation(s), 28 real provider probe(s).
     Configured boundary: 20 allowed binaries, 52 denied, 0 allowed network host(s).
 
  4. THE SIX MANDATORY DEMONSTRATIONS
-    Recorded outcomes: A1 real provider task execution = blocked by environment; A2 orchestration task via scripted test double = verified; B memory across process restart = verified; C context construction = verified; D recovery after interruption = verified; F rejection and repair = verified; E capability growth = verified (0 min old)
-    Recorded demonstration run: 0 min old
+    Recorded outcomes: A1 real provider task execution = blocked by environment; A2 orchestration task via scripted test double = verified; B memory across process restart = verified; C context construction = verified; D recovery after interruption = verified; F rejection and repair = verified; E capability growth = verified (1 min old)
+    Recorded demonstration run: 1 min old
     A — real task execution: attempts the configured provider, and reports blocked-by-environment with the exact error when it is unreachable; the same task through the scripted double is labelled as such and never counted as model proof.
     B — memory survives process death: a separate writer process exits, a later reader process retrieves the record, and the CLI search agrees.
     C — context management: the relevant record is included, the irrelevant noise is excluded, and the budget and omissions are recorded in `context_report`.
@@ -69,7 +69,7 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
     A model's completion claim does not close a task: acceptance criteria are executed by the harness, and unmet criteria are reported as a partial result with the remaining criteria named.
     Verification results recorded: {'failed': 1, 'manual': 1, 'passed': 3}.
     Tasks that cannot run end `blocked` with the real error rather than a substituted answer; the provider probe is real HTTP, not a configuration check.
-    Two real defects were found by these tests during development and fixed in the product (an accepted-but-ignored per-call timeout, and a scaffold that could validate itself); both are now pinned by regression tests.
+    Six product defects were found by these tests and fixed in the product rather than worked around in a test, each now pinned by a regression test: a scaffold that could validate itself; a per-call command timeout accepted and ignored; an explicit numeric zero silently rewritten to the default; a missing working directory reported as 'executable not found' (exit 127); a runner error path that raised TypeError instead of returning its result; and a viewer reading status.permissions from a payload that never contained it. Details in CHANGELOG.md.
 
 12. PLANNED, AND DELIBERATELY NOT DONE
     Live inference against a hosted provider: no route to api.openai.com / api.anthropic.com / any Ollama from this build environment; the clients, their wire formats and their failure paths are tested, the success path is not observed here

@@ -310,9 +310,14 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         f"Verification results recorded: {verifications or 'none'}.",
         "Tasks that cannot run end `blocked` with the real error rather than a substituted "
         "answer; the provider probe is real HTTP, not a configuration check.",
-        "Two real defects were found by these tests during development and fixed in the "
-        "product (an accepted-but-ignored per-call timeout, and a scaffold that could validate "
-        "itself); both are now pinned by regression tests.",
+        "Six product defects were found by these tests and fixed in the product rather than "
+        "worked around in a test, each now pinned by a regression test: a scaffold that "
+        "could validate itself; a per-call command timeout accepted and ignored; an "
+        "explicit numeric zero silently rewritten to the default; a missing working "
+        "directory reported as 'executable not found' (exit 127); a runner error path "
+        "that raised TypeError instead of returning its result; and a viewer reading "
+        "status.permissions from a payload that never contained it. Details in "
+        "CHANGELOG.md.",
     ], {"verifications": verifications, "provider_probe": probe}))
 
     points.append(Point(12, "Planned, and deliberately not done", [
