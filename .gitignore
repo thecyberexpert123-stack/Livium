@@ -1,0 +1,8 @@
+# Livium runtime state: databases, workspaces, capability lab, evidence.
+# Configuration lives in the environment (.env.example documents it), never in the repo.
+.livium/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.py[cod]

@@ -1,0 +1,598 @@
+{
+  "generated_at": "2026-10-15T07:18:34+0000",
+  "repo": "/home/user/Livium",
+  "home": "/tmp/live",
+  "provider": {
+    "label": "openai_compatible:gpt-4o-mini",
+    "probe": {
+      "ok": false,
+      "detail": "openai-compatible@https://api.openai.com/v1 is unreachable at https://api.openai.com/v1: TLS/SSL connection has been closed (EOF) (_ssl.c:992). Check network egress and LIVIUM_BASE_URL.",
+      "model": "gpt-4o-mini",
+      "models_offered": 0,
+      "model_present": null,
+      "is_test_double": false,
+      "context_window": 128000,
+      "context_window_source": "built-in table for a known model (the provider's /models endpoint does not report context length)"
+    }
+  },
+  "points": [
+    {
+      "number": 1,
+      "title": "What was delivered",
+      "body": [
+        "A working agent runtime in the Python standard library: task loop, tool layer, permission boundary, persistent memory, context management, durable task state, recovery, verification, capability lifecycle, growth guardian, HTTP API and viewer.",
+        "1 capability record(s) exist; 1 are active: memory_recent.",
+        "12 tools are callable right now."
+      ],
+      "evidence": {
+        "tools": [
+          "read_file",
+          "list_dir",
+          "sha256",
+          "write_file",
+          "run_command",
+          "memory_search",
+          "memory_write",
+          "memory_update",
+          "memory_forget",
+          "request_capability",
+          "finish_task",
+          "memory_recent"
+        ],
+        "capabilities": [
+          {
+            "name": "memory_recent",
+            "status": "active"
+          }
+        ]
+      }
+    },
+    {
+      "number": 2,
+      "title": "How to run and check it",
+      "body": [
+        "`python3 -m livium doctor` \u2014 what works here, what does not, and why.",
+        "`python3 -m livium serve --port 8787` \u2014 live state: journal, memory, context reports, capabilities, permission decisions.",
+        "`python3 -m unittest discover -s tests -t tests` \u2014 the test suite, no network needed.",
+        "`python3 demos/run_demonstrations.py` \u2014 the six mandatory demonstrations, re-runnable from a fresh clone."
+      ],
+      "evidence": {
+        "readme": "/home/user/Livium/README.md"
+      }
+    },
+    {
+      "number": 3,
+      "title": "What is verified, and how",
+      "body": [
+        "211 test methods across 14 modules; each asserts observed behaviour against real storage and real subprocesses.",
+        "Last recorded full-suite run: 211 tests, exit code 0 (0 min old).",
+        "Journal: 88 events, 0 observed boundary violation(s), 0 refused git operation(s), 23 real provider probe(s).",
+        "Configured boundary: 20 allowed binaries, 52 denied, 0 allowed network host(s)."
+      ],
+      "evidence": {
+        "tests": {
+          "methods": 211,
+          "files": {
+            "test_agent": 17,
+            "test_capabilities": 18,
+            "test_config": 4,
+            "test_context": 12,
+            "test_execution": 20,
+            "test_guardian": 14,
+            "test_memory": 17,
+            "test_models": 15,
+            "test_permissions": 20,
+            "test_recovery": 9,
+            "test_server": 6,
+            "test_store": 7,
+            "test_tools": 34,
+            "test_verification": 18
+          },
+          "source": "unittest discovery"
+        },
+        "suite": {
+          "at": "2026-10-15T07:18:28+0000",
+          "command": "/usr/bin/python3 -m unittest discover -s /home/user/Livium/tests -t /home/user/Livium/tests -v",
+          "tests": 211,
+          "failures": 0,
+          "errors": 0,
+          "exit_code": 0,
+          "result": "OK"
+        },
+        "suite_age": "0 min old",
+        "stats": {
+          "memory": 12,
+          "event": 88,
+          "task": 2,
+          "task_step": 6,
+          "intent": 0,
+          "capability": 1,
+          "context_report": 6,
+          "verification": 5
+        },
+        "event_types": {
+          "provider_probe": 23,
+          "session_start": 14,
+          "memory_write": 12,
+          "guardian_integrity_warning": 8,
+          "model_reply": 6,
+          "memory_retrieved": 6,
+          "guardian_rebaselined": 3,
+          "capability_tool_used": 3,
+          "task_verified": 2,
+          "task_started": 2,
+          "task_run_complete": 2,
+          "task_finished": 2,
+          "memory_search": 1,
+          "capability_tested": 1,
+          "capability_scaffolded": 1,
+          "capability_proposed": 1,
+          "capability_promoted": 1
+        }
+      }
+    },
+    {
+      "number": 4,
+      "title": "The six mandatory demonstrations",
+      "body": [
+        "Recorded outcomes: A1 real provider task execution = blocked by environment; A2 orchestration task via scripted test double = verified; B memory across process restart = verified; C context construction = verified; D recovery after interruption = verified; F rejection and repair = verified; E capability growth = verified (0 min old)",
+        "Recorded demonstration run: 0 min old",
+        "A \u2014 real task execution: attempts the configured provider, and reports blocked-by-environment with the exact error when it is unreachable; the same task through the scripted double is labelled as such and never counted as model proof.",
+        "B \u2014 memory survives process death: a separate writer process exits, a later reader process retrieves the record, and the CLI search agrees.",
+        "C \u2014 context management: the relevant record is included, the irrelevant noise is excluded, and the budget and omissions are recorded in `context_report`.",
+        "D \u2014 recovery: an interrupted write is confirmed from the real file (size, sha256) rather than assumed, and the report says which facts remain unknown.",
+        "E \u2014 genuine capability growth: the gap was measured (memory_search returns nothing for a recency question while records exist), then proposed, implemented, tested, promoted by a named human, and used by a fresh agent.",
+        "F \u2014 controlled rejection: a deliberately broken change fails its tests, promotion is refused, and the repaired change passes."
+      ],
+      "evidence": {
+        "demonstrations": [
+          {
+            "demonstration": "A1 real provider task execution",
+            "outcome": "blocked by environment"
+          },
+          {
+            "demonstration": "A2 orchestration task via scripted test double",
+            "outcome": "verified"
+          },
+          {
+            "demonstration": "B memory across process restart",
+            "outcome": "verified"
+          },
+          {
+            "demonstration": "C context construction",
+            "outcome": "verified"
+          },
+          {
+            "demonstration": "D recovery after interruption",
+            "outcome": "verified"
+          },
+          {
+            "demonstration": "F rejection and repair",
+            "outcome": "verified"
+          },
+          {
+            "demonstration": "E capability growth",
+            "outcome": "verified"
+          }
+        ],
+        "evidence_age": "0 min old"
+      }
+    },
+    {
+      "number": 5,
+      "title": "Persistent memory",
+      "body": [
+        "12 record(s) live in SQLite; kinds: {'decision': 1, 'experience': 3, 'failure': 3, 'foundational': 3, 'task': 2}; verification states: {'executed': 2, 'tested': 4, 'unverified': 2, 'verified': 4}.",
+        "Retrieval is ranked full-text search over real rows; every record carries confidence, verification state, evidence, source and timestamps.",
+        "Instructions and their prior versions are preserved in `memory_history`; forgetting retires a record instead of deleting it, so history survives.",
+        "Demonstration B is the durability evidence: it crosses a real process boundary."
+      ],
+      "evidence": {
+        "memory_by_kind": {
+          "decision": 1,
+          "experience": 3,
+          "failure": 3,
+          "foundational": 3,
+          "task": 2
+        },
+        "memory_by_verification": {
+          "executed": 2,
+          "tested": 4,
+          "unverified": 2,
+          "verified": 4
+        }
+      }
+    },
+    {
+      "number": 6,
+      "title": "Context management",
+      "body": [
+        "Context is assembled per step from instructions, objective, criteria, relevant memory, capability limits, execution state and unresolved questions, in a fixed priority order with mandatory instruction sections first.",
+        "Budget: window 128000 tokens, output reserve 1024 (window source: built-in table for a known model (the provider's /models endpoint does not report context length)).",
+        "6 context report(s) recorded; each names what was included and what was omitted, so a decision to drop something is auditable.",
+        "Estimates are labelled estimates and calibrated against real provider usage when the provider reports it; a build that cannot fit the mandatory sections refuses rather than truncating a rule."
+      ],
+      "evidence": {
+        "context_window": null,
+        "output_reserve": 1024,
+        "reports": 6,
+        "window_source": "built-in table for a known model (the provider's /models endpoint does not report context length)"
+      }
+    },
+    {
+      "number": 7,
+      "title": "Durable task state and recovery",
+      "body": [
+        "2 task(s) and 6 step(s) recorded; intents by state: none.",
+        "0 recovery finding(s) journalled. Each is a determination from evidence: confirmed_complete, not_executed, conflicting or unknown.",
+        "Recovery never replays blind: an operation that landed is not repeated, and an operation whose effect is unobservable is reported as unknown with the argv it ran."
+      ],
+      "evidence": {
+        "intents": {},
+        "recovery_findings": 0
+      }
+    },
+    {
+      "number": 8,
+      "title": "Capability growth",
+      "body": [
+        "Lifecycle: proposed \u2192 experimental \u2192 validated \u2192 active \u2192 maintained \u2192 deprecated, with rollback and rejection as first-class outcomes.",
+        "A scaffold cannot validate itself: a module containing TODO/NotImplemented markers is refused, its status stays experimental, and the refusal is journalled.",
+        "Only a human promotes: `--approved-by` is required, the guardian gate runs, and the module is installed into `livium/promoted/` where it loads at the next startup."
+      ],
+      "evidence": {
+        "capabilities": [
+          {
+            "name": "memory_recent",
+            "status": "active",
+            "requirement": "A returning agent must be able to enumerate what it learned recently without already knowing a keyword, so it can re-apply its own experience at the start of a session.",
+            "rationale": "",
+            "implementation": "/home/user/Livium/livium/promoted/memory_recent.py",
+            "tests": "/tmp/live/capability-lab/memory_recent/test_memory_recent.py",
+            "verification": "tests executed and passed; promoted after SHA-256 1d907e7e047b4dc7",
+            "evidence": "argv=['python3', '-m', 'unittest', 'discover', '-s', '/tmp/live/capability-lab/memory_recent', '-p', 'test_*.py', '-v']\nexit_code=0 duration_ms=286 network_isolated=True\n--- stderr (test runner output) ---\ntest_bad_arguments_are_reported (test_memory_recent.TestMemoryRecent.test_bad_arguments_are_reported) ... ok\ntest_content_change_moves_a_record_to_the_front (test_memory_recent.TestMemoryRecent.test_content_change_moves_a_record_to_the_front)\nThe ordering must follow real updates, not insertion order. ... ok\ntest_empty_memory_is_reported_honestly (test_memory_recent.TestMemoryRecent.test_empty_memory_is_reported_honestly) ... ok\ntest_kind_filter_is_applied (test_memory_recent.TestMemoryRecent.test_kind_filter_is_applied) ... ok\ntest_limit_is_respected_and_clamped (test_memory_recent.TestMemoryRecent.test_limit_is_respected_and_clamped) ... ok\ntest_missing_memory_service_is_an_error_not_an_empty_list (test_memory_recent.TestMemoryRecent.test_missing_memory_service_is_an_error_not_an_empty_list) ... ok\ntest_retired_records_are_not_listed_as_current_knowledge (test_memory_recent.TestMemoryRecent.test_retired_records_are_not_listed_as_current_knowledge) ... ok\ntest_returns_records_newest_first (test_memory_recent.TestMemoryRecent.test_returns_records_newest_first) ... ok\ntest_trust_information_travels_with_each_record (test_memory_recent.TestMemoryRecent.test_trust_information_travels_with_each_record) ... ok\ntest_unknown_tool_name_is_refused (test_memory_recent.TestMemoryRecent.test_unknown_tool_name_is_refused) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.220s\n\nOK\n",
+            "reuse_analysis": "1. Direct reuse: none. memory_search requires a non-empty query and ranks by term match, so 'what did I learn recently?' returns zero rows (measured). 2. Composition: no existing tool reaches the memory table. 3. Extension: an empty-query mode on memory_search would give one tool two contradictory contracts; a separate read-only tool is smaller.",
+            "lines": 105,
+            "created_at": "2026-10-15T07:03:24+00:00",
+            "updated_at": "2026-10-15T07:03:29+00:00",
+            "promoted_at": "2026-10-15T07:03:29+00:00",
+            "promoted_by": "Repo maintainer"
+          }
+        ]
+      }
+    },
+    {
+      "number": 9,
+      "title": "Growth guardian and complexity control",
+      "body": [
+        "Guardian integrity: ok \u2014 8 protected file(s) match the recorded baseline",
+        "Protected paths checked: 8; mismatches: 0; missing baselines: 0.",
+        "The agent cannot write protected paths, cannot re-baseline, and cannot promote while the guardian is frozen; those are refusals in the permission engine, not conventions.",
+        "Complexity control is applied by deletion: unreachable branches, unused parameters, unused imports and dead API surface were removed rather than kept 'in case'."
+      ],
+      "evidence": {
+        "integrity": {
+          "ok": true,
+          "detail": "8 protected file(s) match the recorded baseline",
+          "checked": [
+            "/home/user/Livium/AGENTS.md",
+            "/home/user/Livium/livium/config.py",
+            "/home/user/Livium/livium/execution.py",
+            "/home/user/Livium/livium/guardian.py",
+            "/home/user/Livium/livium/permissions.py",
+            "/home/user/Livium/livium/prompts/CONTRACT.md",
+            "/home/user/Livium/livium/prompts/FOUNDATIONAL.md",
+            "/home/user/Livium/livium/prompts/GROWTH.md"
+          ],
+          "mismatches": [],
+          "missing_baseline": [],
+          "status": "ok"
+        }
+      }
+    },
+    {
+      "number": 10,
+      "title": "Security boundary",
+      "body": [
+        "Commands: 20 allow-listed binaries, 52 denied; no shell interpreter is permitted, so shell syntax stays literal text.",
+        "Network: 0 allowed host(s); the runner's isolation mechanism is unshare-netns (network isolated: True, filesystem confined: False).",
+        "Filesystem: writes are confined to the workspace and the capability lab by the permission engine; subprocess filesystem access is NOT confined, and that is stated rather than implied (docs/LIMITATIONS.md section 2).",
+        "Credentials: the child process environment is built from scratch, so the agent's own environment \u2014 and any API key in it \u2014 is never inherited by a command."
+      ],
+      "evidence": {
+        "permissions": {
+          "read_roots": [
+            "/tmp/live/workspace",
+            "/tmp/live/capability-lab",
+            "/home/user/Livium"
+          ],
+          "write_roots": [
+            "/tmp/live/workspace",
+            "/tmp/live/capability-lab"
+          ],
+          "protected": [
+            "/home/user/Livium/livium/prompts",
+            "/home/user/Livium/AGENTS.md",
+            "/home/user/Livium/livium/permissions.py",
+            "/home/user/Livium/livium/guardian.py",
+            "/home/user/Livium/livium/config.py",
+            "/home/user/Livium/livium/execution.py"
+          ],
+          "allowed_binaries": [
+            "cat",
+            "date",
+            "diff",
+            "echo",
+            "false",
+            "find",
+            "git",
+            "grep",
+            "head",
+            "ls",
+            "python",
+            "python3",
+            "sed",
+            "sha256sum",
+            "sort",
+            "tail",
+            "tr",
+            "true",
+            "uniq",
+            "wc"
+          ],
+          "denied_binaries": [
+            "apt",
+            "apt-get",
+            "at",
+            "bash",
+            "chgrp",
+            "chmod",
+            "chown",
+            "cmd",
+            "cmd.exe",
+            "command.com",
+            "crontab",
+            "curl",
+            "dd",
+            "del",
+            "diskpart",
+            "eval",
+            "exec",
+            "format",
+            "icacls",
+            "kill",
+            "mkfs",
+            "mv",
+            "nc",
+            "ncat",
+            "netcat",
+            "npm",
+            "pip",
+            "pip3",
+            "pkill",
+            "powershell",
+            "powershell.exe",
+            "pwsh",
+            "rd",
+            "reboot",
+            "reg",
+            "regedit",
+            "rm",
+            "rmdir",
+            "sc",
+            "schtasks",
+            "scp",
+            "sh",
+            "shutdown",
+            "ssh",
+            "su",
+            "sudo",
+            "systemctl",
+            "takeown",
+            "telnet",
+            "wget",
+            "wsl",
+            "zsh"
+          ],
+          "network_allowlist": [],
+          "git_allowed": [
+            "blame",
+            "cat-file",
+            "describe",
+            "diff",
+            "grep",
+            "log",
+            "ls-files",
+            "remote-get-url",
+            "rev-parse",
+            "shortlog",
+            "show",
+            "status",
+            "version"
+          ],
+          "git_refused": [
+            "am",
+            "apply",
+            "branch",
+            "checkout",
+            "cherry-pick",
+            "clean",
+            "clone",
+            "commit",
+            "config",
+            "fetch",
+            "filter-branch",
+            "gc",
+            "init",
+            "merge",
+            "mv",
+            "pull",
+            "push",
+            "rebase",
+            "remote",
+            "reset",
+            "restore",
+            "revert",
+            "rm",
+            "stash",
+            "submodule",
+            "switch",
+            "tag",
+            "update-ref",
+            "worktree"
+          ]
+        },
+        "isolation": {
+          "mechanism": "unshare-netns",
+          "network_isolated": true,
+          "filesystem_confined": false,
+          "detail": "commands run in a user+network namespace: network access is removed and verified blocked; filesystem is NOT confined and the process keeps the invoking user's privileges"
+        }
+      }
+    },
+    {
+      "number": 11,
+      "title": "Honesty of verification",
+      "body": [
+        "A model's completion claim does not close a task: acceptance criteria are executed by the harness, and unmet criteria are reported as a partial result with the remaining criteria named.",
+        "Verification results recorded: {'failed': 1, 'manual': 1, 'passed': 3}.",
+        "Tasks that cannot run end `blocked` with the real error rather than a substituted answer; the provider probe is real HTTP, not a configuration check.",
+        "Two real defects were found by these tests during development and fixed in the product (an accepted-but-ignored per-call timeout, and a scaffold that could validate itself); both are now pinned by regression tests."
+      ],
+      "evidence": {
+        "verifications": {
+          "failed": 1,
+          "manual": 1,
+          "passed": 3
+        },
+        "provider_probe": {
+          "ok": false,
+          "detail": "openai-compatible@https://api.openai.com/v1 is unreachable at https://api.openai.com/v1: TLS/SSL connection has been closed (EOF) (_ssl.c:992). Check network egress and LIVIUM_BASE_URL.",
+          "model": "gpt-4o-mini",
+          "models_offered": 0,
+          "model_present": null,
+          "is_test_double": false,
+          "context_window": 128000,
+          "context_window_source": "built-in table for a known model (the provider's /models endpoint does not report context length)"
+        }
+      }
+    },
+    {
+      "number": 12,
+      "title": "Planned, and deliberately not done",
+      "body": [
+        "Live inference against a hosted provider: no route to api.openai.com / api.anthropic.com / any Ollama from this build environment; the clients, their wire formats and their failure paths are tested, the success path is not observed here",
+        "Filesystem confinement for subprocesses: requires a container or a mount-namespace/overlay setup; not attempted rather than faked, see docs/LIMITATIONS.md section 2",
+        "Semantic memory retrieval: needs an embeddings provider or a dependency; keyword FTS5 was sufficient for every observed need so far, and invention by default is what the specification forbids",
+        "Concurrent task execution: single-writer SQLite design; parallel agents would need coordination that no observed requirement justified",
+        "Instruction self-modification: intentionally proposal-only: a human approves instruction changes"
+      ],
+      "evidence": {
+        "planned": [
+          {
+            "item": "Live inference against a hosted provider",
+            "reason": "no route to api.openai.com / api.anthropic.com / any Ollama from this build environment; the clients, their wire formats and their failure paths are tested, the success path is not observed here"
+          },
+          {
+            "item": "Filesystem confinement for subprocesses",
+            "reason": "requires a container or a mount-namespace/overlay setup; not attempted rather than faked, see docs/LIMITATIONS.md section 2"
+          },
+          {
+            "item": "Semantic memory retrieval",
+            "reason": "needs an embeddings provider or a dependency; keyword FTS5 was sufficient for every observed need so far, and invention by default is what the specification forbids"
+          },
+          {
+            "item": "Concurrent task execution",
+            "reason": "single-writer SQLite design; parallel agents would need coordination that no observed requirement justified"
+          },
+          {
+            "item": "Instruction self-modification",
+            "reason": "intentionally proposal-only: a human approves instruction changes"
+          }
+        ]
+      }
+    }
+  ],
+  "tests": {
+    "methods": 211,
+    "files": {
+      "test_agent": 17,
+      "test_capabilities": 18,
+      "test_config": 4,
+      "test_context": 12,
+      "test_execution": 20,
+      "test_guardian": 14,
+      "test_memory": 17,
+      "test_models": 15,
+      "test_permissions": 20,
+      "test_recovery": 9,
+      "test_server": 6,
+      "test_store": 7,
+      "test_tools": 34,
+      "test_verification": 18
+    },
+    "source": "unittest discovery"
+  },
+  "stats": {
+    "memory": 12,
+    "event": 88,
+    "task": 2,
+    "task_step": 6,
+    "intent": 0,
+    "capability": 1,
+    "context_report": 6,
+    "verification": 5
+  },
+  "demonstrations": [
+    {
+      "demonstration": "A1 real provider task execution",
+      "outcome": "blocked by environment"
+    },
+    {
+      "demonstration": "A2 orchestration task via scripted test double",
+      "outcome": "verified"
+    },
+    {
+      "demonstration": "B memory across process restart",
+      "outcome": "verified"
+    },
+    {
+      "demonstration": "C context construction",
+      "outcome": "verified"
+    },
+    {
+      "demonstration": "D recovery after interruption",
+      "outcome": "verified"
+    },
+    {
+      "demonstration": "F rejection and repair",
+      "outcome": "verified"
+    },
+    {
+      "demonstration": "E capability growth",
+      "outcome": "verified"
+    }
+  ],
+  "planned": [
+    {
+      "item": "Live inference against a hosted provider",
+      "reason": "no route to api.openai.com / api.anthropic.com / any Ollama from this build environment; the clients, their wire formats and their failure paths are tested, the success path is not observed here"
+    },
+    {
+      "item": "Filesystem confinement for subprocesses",
+      "reason": "requires a container or a mount-namespace/overlay setup; not attempted rather than faked, see docs/LIMITATIONS.md section 2"
+    },
+    {
+      "item": "Semantic memory retrieval",
+      "reason": "needs an embeddings provider or a dependency; keyword FTS5 was sufficient for every observed need so far, and invention by default is what the specification forbids"
+    },
+    {
+      "item": "Concurrent task execution",
+      "reason": "single-writer SQLite design; parallel agents would need coordination that no observed requirement justified"
+    },
+    {
+      "item": "Instruction self-modification",
+      "reason": "intentionally proposal-only: a human approves instruction changes"
+    }
+  ]
+}
