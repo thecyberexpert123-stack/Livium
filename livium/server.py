@@ -13,6 +13,7 @@ with the reason.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import pathlib
 import threading
@@ -23,6 +24,7 @@ from typing import Any
 from .agent import LiviumAgent
 from .capabilities import CapabilityRegistry
 from .config import Config
+from .ledger import Ledger
 
 WEB_ROOT = pathlib.Path(__file__).resolve().parent / "web"
 CONTENT_TYPES = {
@@ -168,6 +170,16 @@ class Handler(BaseHTTPRequestHandler):
                 "steps": [dict(s) for s in steps],
                 "verification": [dict(c) for c in checks],
                 "context_reports": [dict(r) for r in reports],
+            })
+        if route == "/api/ledger":
+            ledger = Ledger(agent.store)
+            limit = int((query.get("limit") or ["20"])[0])
+            return self._json(200, {
+                "rows": [dataclasses.asdict(row) for row in ledger.rows(limit=limit)],
+                "summary": ledger.summary(),
+                "note": ("prompt_tokens_actual and completion_tokens_actual are NULL when the "
+                         "provider did not report usage; tokens_estimated is a separate "
+                         "measurement and is never folded into them"),
             })
         if route == "/api/capabilities":
             registry = CapabilityRegistry(

@@ -67,6 +67,7 @@ FRONT_END_FIELDS: tuple[tuple[str, str], ...] = (
     ("/api/context", "reports"),
     ("/api/events", "events"),
     ("/api/tasks", "tasks"),
+    ("/api/ledger", "rows"),
     ("/api/tools", "tools"),
     ("/api/recovery", "findings"),
     ("/api/recovery", "next_action"),

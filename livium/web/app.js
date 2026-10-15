@@ -223,6 +223,35 @@ async function refreshTasks() {
         <td class="mono">${esc(t.updated_at)}</td></tr>`).join("")}</tbody></table>`;
 }
 
+async function refreshLedger() {
+  const data = await getJSON("/api/ledger?limit=8");
+  const rows = data.rows || [];
+  if (!rows.length) {
+    $("ledger").innerHTML = `<p class="empty">no task has been measured yet</p>`;
+    return;
+  }
+  $("ledger").innerHTML = `<table><thead><tr><th>task</th><th>category</th><th>status</th>
+    <th>verified</th><th>model calls</th><th>tools</th><th>retries</th><th>failures</th>
+    <th>actual tokens</th><th>estimated</th><th>reused</th><th>new code</th></tr></thead><tbody>`
+    + rows.map((r) => {
+      const actual = r.prompt_tokens_actual === null && r.completion_tokens_actual === null
+        ? `<span class="tag warn">not reported</span>`
+        : `${r.prompt_tokens_actual ?? 0} + ${r.completion_tokens_actual ?? 0}`;
+      return `<tr><td class="mono">${esc((r.task_id || "").slice(0, 8))}</td>
+        <td>${esc(r.category)}</td>
+        <td><span class="tag ${r.status === "complete" ? "ok" : r.status === "blocked" ? "bad" : "warn"}">${esc(r.status)}</span></td>
+        <td>${esc(r.verification_state || "\u2014")}</td>
+        <td class="mono">${esc(r.model_calls)}</td>
+        <td class="mono">${esc(r.tools_executed)}</td>
+        <td class="mono">${esc(r.retries)}</td>
+        <td class="mono">${esc(r.failures)}</td>
+        <td class="mono">${actual}</td>
+        <td class="mono">${esc(r.tokens_estimated === null ? "\u2014" : r.tokens_estimated)}</td>
+        <td>${r.capability_reused ? "yes" : "no"}</td>
+        <td>${r.new_development ? "yes" : "no"}</td></tr>`;
+    }).join("") + `</tbody></table>`;
+}
+
 async function refreshContext() {
   const data = await getJSON("/api/context?limit=12");
   const reports = data.reports || [];
@@ -246,7 +275,7 @@ async function refreshContext() {
 async function refreshAll() {
   try {
     await Promise.all([refreshStatus(), refreshCapabilities(), refreshMemory($("memory-query").value),
-                       refreshEvents(), refreshTasks(), refreshContext()]);
+                       refreshEvents(), refreshTasks(), refreshContext(), refreshLedger()]);
   } catch (error) {
     console.error(error);
     $("badges").innerHTML = badge(`viewer error: ${error.message}`, "bad");

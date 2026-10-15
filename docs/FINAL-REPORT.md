@@ -1,6 +1,6 @@
 written: docs/evidence/final-report.json
 AGENT LIVIUM — FINAL REPORT
-generated 2026-10-15T08:21:42+0000
+generated 2026-10-15T08:23:51+0000
 repository /home/user/Livium
 home /tmp/livium-release
 provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.openai.com/v1 is unreachable at https://api.openai.com/v1: TLS/SSL connection has been closed (EOF) (_ssl.c:992). Check network egress and LIVIUM_BASE_URL.)
@@ -33,7 +33,7 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
     D — recovery: an interrupted write is confirmed from the real file (size, sha256) rather than assumed, and the report says which facts remain unknown.
     E — genuine capability growth: the gap was measured (memory_search returns nothing for a recency question while records exist), then proposed, implemented, tested, promoted by a named human, and used by a fresh agent.
     F — controlled rejection: a deliberately broken change fails its tests, promotion is refused, and the repaired change passes.
-    Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified (1 min old)
+    Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified (0 min old)
 
  5. PERSISTENT MEMORY
     40 record(s) live in SQLite; kinds: {'decision': 3, 'experience': 29, 'failure': 2, 'foundational': 3, 'task': 3}; verification states: {'claimed': 2, 'tested': 2, 'unverified': 26, 'verified': 10}.

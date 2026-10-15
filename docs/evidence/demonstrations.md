@@ -2,7 +2,7 @@
 
 - repository: `/home/user/Livium`
 - home: `/tmp/livium-release`
-- duration: 3.5s
+- duration: 3.0s
 
 ## A1 real provider task execution
 
@@ -34,7 +34,7 @@ the configured provider is not usable: openai-compatible@https://api.openai.com/
 
 **Outcome:** verified
 
-task 4622159a [complete] steps=3 model_calls=3 tool_calls=3 verification=verified
+task 9274ad2e [complete] steps=3 model_calls=3 tool_calls=3 verification=verified
 
 ```json
 {
@@ -116,7 +116,7 @@ the interrupted write was confirmed from the file on disk, not assumed
 ```json
 {
   "setup_output": "interrupted state persisted",
-  "recovery_output": "Recovery report\n  task demo-d [active]: produce reports/half.md\n  intent 2 (write_file) -> confirmed_complete: /tmp/livium-release/workspace/reports/half.md holds the intended 20 bytes, so the write completed even though the state record was not updated; do not repeat it\n      evidence: sha256=543b25205dd2bb3f64a0addeff095cf3d19c2a441de46b3d24b79aa029fa4680 size=20 mtime=1792052464210493014 path=/tmp/livium-release/workspace/reports/half.md\n  observations:\n    - step 2 (model_call) did not record completion: writing reports/half.md\n  next action: Every interrupted operation has been accounted for from evidence; the task can continue from: write reports/half.md then count its lines\n  safe to resume: True",
+  "recovery_output": "Recovery report\n  task demo-d [active]: produce reports/half.md\n  intent 2 (write_file) -> confirmed_complete: /tmp/livium-release/workspace/reports/half.md holds the intended 20 bytes, so the write completed even though the state record was not updated; do not repeat it\n      evidence: sha256=543b25205dd2bb3f64a0addeff095cf3d19c2a441de46b3d24b79aa029fa4680 size=20 mtime=1792052597667167090 path=/tmp/livium-release/workspace/reports/half.md\n  observations:\n    - step 2 (model_call) did not record completion: writing reports/half.md\n  next action: Every interrupted operation has been accounted for from evidence; the task can continue from: write reports/half.md then count its lines\n  safe to resume: True",
   "note": "The file's real size matched the intent, so recovery concluded the write had completed despite the missing acknowledgement -- and said so rather than replaying it."
 }
 ```
@@ -164,7 +164,7 @@ a required ability the agent lacked was implemented, tested, promoted by a human
   "load_failures": [],
   "capability_tool_used_event": true,
   "post_promotion_run_status": "complete",
-  "post_promotion_output": "3 most recent memory record(s), newest first:\n  [mem:38] failure/py-path | updated=2026-10-15T08:21:04+00:00 | verification=tested | confidence=0.80 | status=active\n      the first capability test run failed on ModuleNotFoundError for livium\n      evidence: recorded during implementation\n  [mem:37] decision/promotion-path | updated=2026-10-15T08:21:04+00:00 | verification=verified | confidence=0.80 | status=active\n      promoted capabilities are loaded from livium/promoted at startup\n      evide",
+  "post_promotion_output": "3 most recent memory record(s), newest first:\n  [mem:38] failure/py-path | updated=2026-10-15T08:23:17+00:00 | verification=tested | confidence=0.80 | status=active\n      the first capability test run failed on ModuleNotFoundError for livium\n      evidence: recorded during implementation\n  [mem:37] decision/promotion-path | updated=2026-10-15T08:23:17+00:00 | verification=verified | confidence=0.80 | status=active\n      promoted capabilities are loaded from livium/promoted at startup\n      evide",
   "lines": 105,
   "note": "This is real architectural growth: a human-promoted module is now loaded at startup and its tool is callable by the model."
 }

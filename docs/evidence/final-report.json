@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-15T08:21:42+0000",
+  "generated_at": "2026-10-15T08:23:51+0000",
   "repo": "/home/user/Livium",
   "home": "/tmp/livium-release",
   "provider": {
@@ -99,7 +99,7 @@
           "source": "unittest discovery"
         },
         "suite": {
-          "at": "2026-10-15T08:21:42+0000",
+          "at": "2026-10-15T08:23:51+0000",
           "command": "/usr/bin/python3 -m unittest discover -s /home/user/Livium/tests -t /home/user/Livium/tests -v",
           "tests": 289,
           "failures": 0,
@@ -165,7 +165,7 @@
         "D \u2014 recovery: an interrupted write is confirmed from the real file (size, sha256) rather than assumed, and the report says which facts remain unknown.",
         "E \u2014 genuine capability growth: the gap was measured (memory_search returns nothing for a recency question while records exist), then proposed, implemented, tested, promoted by a named human, and used by a fresh agent.",
         "F \u2014 controlled rejection: a deliberately broken change fails its tests, promotion is refused, and the repaired change passes.",
-        "Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified (1 min old)"
+        "Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified (0 min old)"
       ],
       "evidence": {
         "demonstrations": [
@@ -238,7 +238,7 @@
               "route": "execute",
               "model_replies": "scripted test double (stated in every reply record)"
             },
-            "at": "2026-10-15T08:21:07+0000"
+            "at": "2026-10-15T08:23:20+0000"
           },
           {
             "demonstration": "M2 capability discovery",
@@ -251,7 +251,7 @@
                   "word_count"
                 ],
                 "test_exit_code": 0,
-                "test_duration_ms": 115,
+                "test_duration_ms": 82,
                 "network_isolated": null
               },
               "search_matches": [
@@ -329,7 +329,7 @@
                 ]
               ]
             },
-            "at": "2026-10-15T08:21:07+0000"
+            "at": "2026-10-15T08:23:20+0000"
           },
           {
             "demonstration": "M3 failure changes the next action",
@@ -359,7 +359,7 @@
                     "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-mission/restricted/release.md\",\"purpose\":\"the release file\"}",
                     "reason": "write needs approval: /tmp/livium-mission/restricted/release.md is inside an approval root (/tmp/livium-mission/restricted). A human decides, not the agent; see `livium approvals`.",
                     "status": "pending",
-                    "created_at": "2026-10-15T08:21:07+00:00",
+                    "created_at": "2026-10-15T08:23:20+00:00",
                     "decided_at": null,
                     "decided_by": null,
                     "note": null
@@ -410,7 +410,7 @@
                 ]
               }
             },
-            "at": "2026-10-15T08:21:08+0000"
+            "at": "2026-10-15T08:23:21+0000"
           },
           {
             "demonstration": "M4 resume after interruption",
@@ -427,7 +427,7 @@
                   "tool": "write_file",
                   "determination": "confirmed_complete",
                   "detail": "/tmp/livium-mission/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
-                  "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052468594515156 path=/tmp/livium-mission/workspace/interrupted.md"
+                  "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052601071184284 path=/tmp/livium-mission/workspace/interrupted.md"
                 }
               ],
               "intent_rows_after_resume": [
@@ -449,7 +449,7 @@
                 ]
               ]
             },
-            "at": "2026-10-15T08:21:08+0000"
+            "at": "2026-10-15T08:23:21+0000"
           },
           {
             "demonstration": "M5 experience reuse across processes",
@@ -516,7 +516,7 @@
                 ]
               }
             },
-            "at": "2026-10-15T08:21:09+0000"
+            "at": "2026-10-15T08:23:21+0000"
           },
           {
             "demonstration": "M6 token accounting",
@@ -543,10 +543,10 @@
               },
               "model": "usage-reporting test double (no real provider is reachable here)"
             },
-            "at": "2026-10-15T08:21:09+0000"
+            "at": "2026-10-15T08:23:21+0000"
           }
         ],
-        "mission_evidence_age": "1 min old"
+        "mission_evidence_age": "0 min old"
       }
     },
     {
@@ -623,12 +623,12 @@
             "implementation": "/home/user/Livium/livium/promoted/memory_recent.py",
             "tests": "/tmp/livium-release/capability-lab/memory_recent/test_memory_recent.py",
             "verification": "tests executed and passed; promoted after SHA-256 1d907e7e047b4dc7",
-            "evidence": "argv=['python3', '-m', 'unittest', 'discover', '-s', '/tmp/livium-release/capability-lab/memory_recent', '-p', 'test_*.py', '-v']\nexit_code=0 duration_ms=740 network_isolated=True\n--- stderr (test runner output) ---\ntest_bad_arguments_are_reported (test_memory_recent.TestMemoryRecent.test_bad_arguments_are_reported) ... ok\ntest_content_change_moves_a_record_to_the_front (test_memory_recent.TestMemoryRecent.test_content_change_moves_a_record_to_the_front)\nThe ordering must follow real updates, not insertion order. ... ok\ntest_empty_memory_is_reported_honestly (test_memory_recent.TestMemoryRecent.test_empty_memory_is_reported_honestly) ... ok\ntest_kind_filter_is_applied (test_memory_recent.TestMemoryRecent.test_kind_filter_is_applied) ... ok\ntest_limit_is_respected_and_clamped (test_memory_recent.TestMemoryRecent.test_limit_is_respected_and_clamped) ... ok\ntest_missing_memory_service_is_an_error_not_an_empty_list (test_memory_recent.TestMemoryRecent.test_missing_memory_service_is_an_error_not_an_empty_list) ... ok\ntest_retired_records_are_not_listed_as_current_knowledge (test_memory_recent.TestMemoryRecent.test_retired_records_are_not_listed_as_current_knowledge) ... ok\ntest_returns_records_newest_first (test_memory_recent.TestMemoryRecent.test_returns_records_newest_first) ... ok\ntest_trust_information_travels_with_each_record (test_memory_recent.TestMemoryRecent.test_trust_information_travels_with_each_record) ... ok\ntest_unknown_tool_name_is_refused (test_memory_recent.TestMemoryRecent.test_unknown_tool_name_is_refused) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.627s\n\nOK\n",
+            "evidence": "argv=['python3', '-m', 'unittest', 'discover', '-s', '/tmp/livium-release/capability-lab/memory_recent', '-p', 'test_*.py', '-v']\nexit_code=0 duration_ms=628 network_isolated=True\n--- stderr (test runner output) ---\ntest_bad_arguments_are_reported (test_memory_recent.TestMemoryRecent.test_bad_arguments_are_reported) ... ok\ntest_content_change_moves_a_record_to_the_front (test_memory_recent.TestMemoryRecent.test_content_change_moves_a_record_to_the_front)\nThe ordering must follow real updates, not insertion order. ... ok\ntest_empty_memory_is_reported_honestly (test_memory_recent.TestMemoryRecent.test_empty_memory_is_reported_honestly) ... ok\ntest_kind_filter_is_applied (test_memory_recent.TestMemoryRecent.test_kind_filter_is_applied) ... ok\ntest_limit_is_respected_and_clamped (test_memory_recent.TestMemoryRecent.test_limit_is_respected_and_clamped) ... ok\ntest_missing_memory_service_is_an_error_not_an_empty_list (test_memory_recent.TestMemoryRecent.test_missing_memory_service_is_an_error_not_an_empty_list) ... ok\ntest_retired_records_are_not_listed_as_current_knowledge (test_memory_recent.TestMemoryRecent.test_retired_records_are_not_listed_as_current_knowledge) ... ok\ntest_returns_records_newest_first (test_memory_recent.TestMemoryRecent.test_returns_records_newest_first) ... ok\ntest_trust_information_travels_with_each_record (test_memory_recent.TestMemoryRecent.test_trust_information_travels_with_each_record) ... ok\ntest_unknown_tool_name_is_refused (test_memory_recent.TestMemoryRecent.test_unknown_tool_name_is_refused) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.534s\n\nOK\n",
             "reuse_analysis": "1. Direct reuse: none -- memory_search requires a non-empty query and ranks by term match, so the recency question returns zero rows (measured above). 2. Composition: no existing tool reaches the memory table. 3. Extension: an empty-query mode on memory_search would give one tool two contradictory contracts with ambiguous output; a separate read-only tool is the smaller change.",
             "lines": 105,
-            "created_at": "2026-10-15T08:21:04+00:00",
-            "updated_at": "2026-10-15T08:21:42+00:00",
-            "promoted_at": "2026-10-15T08:21:06+00:00",
+            "created_at": "2026-10-15T08:23:17+00:00",
+            "updated_at": "2026-10-15T08:23:51+00:00",
+            "promoted_at": "2026-10-15T08:23:19+00:00",
             "promoted_by": "Aditya (human)",
             "description": "Lists the most recently updated memory records, newest first.",
             "tools": [
@@ -1174,7 +1174,7 @@
           "route": "execute",
           "model_replies": "scripted test double (stated in every reply record)"
         },
-        "at": "2026-10-15T08:21:07+0000"
+        "at": "2026-10-15T08:23:20+0000"
       },
       {
         "demonstration": "M2 capability discovery",
@@ -1187,7 +1187,7 @@
               "word_count"
             ],
             "test_exit_code": 0,
-            "test_duration_ms": 115,
+            "test_duration_ms": 82,
             "network_isolated": null
           },
           "search_matches": [
@@ -1265,7 +1265,7 @@
             ]
           ]
         },
-        "at": "2026-10-15T08:21:07+0000"
+        "at": "2026-10-15T08:23:20+0000"
       },
       {
         "demonstration": "M3 failure changes the next action",
@@ -1295,7 +1295,7 @@
                 "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-mission/restricted/release.md\",\"purpose\":\"the release file\"}",
                 "reason": "write needs approval: /tmp/livium-mission/restricted/release.md is inside an approval root (/tmp/livium-mission/restricted). A human decides, not the agent; see `livium approvals`.",
                 "status": "pending",
-                "created_at": "2026-10-15T08:21:07+00:00",
+                "created_at": "2026-10-15T08:23:20+00:00",
                 "decided_at": null,
                 "decided_by": null,
                 "note": null
@@ -1346,7 +1346,7 @@
             ]
           }
         },
-        "at": "2026-10-15T08:21:08+0000"
+        "at": "2026-10-15T08:23:21+0000"
       },
       {
         "demonstration": "M4 resume after interruption",
@@ -1363,7 +1363,7 @@
               "tool": "write_file",
               "determination": "confirmed_complete",
               "detail": "/tmp/livium-mission/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
-              "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052468594515156 path=/tmp/livium-mission/workspace/interrupted.md"
+              "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052601071184284 path=/tmp/livium-mission/workspace/interrupted.md"
             }
           ],
           "intent_rows_after_resume": [
@@ -1385,7 +1385,7 @@
             ]
           ]
         },
-        "at": "2026-10-15T08:21:08+0000"
+        "at": "2026-10-15T08:23:21+0000"
       },
       {
         "demonstration": "M5 experience reuse across processes",
@@ -1452,7 +1452,7 @@
             ]
           }
         },
-        "at": "2026-10-15T08:21:09+0000"
+        "at": "2026-10-15T08:23:21+0000"
       },
       {
         "demonstration": "M6 token accounting",
@@ -1479,10 +1479,10 @@
           },
           "model": "usage-reporting test double (no real provider is reachable here)"
         },
-        "at": "2026-10-15T08:21:09+0000"
+        "at": "2026-10-15T08:23:21+0000"
       }
     ],
-    "evidence_age": "1 min old"
+    "evidence_age": "0 min old"
   },
   "planned": [
     {

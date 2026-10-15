@@ -61,6 +61,10 @@ catalogue, and each task now leaves one measured row.
   longer sent for tools the step cannot use.
 - `LIVIUM_PROMOTED_DIR` makes the promotion target configurable (an installed package
   may be read-only; a demo must not write into the package it demonstrates).
+- `GET /api/ledger` and a viewer panel show the last tasks' measured cost: category,
+  status, verification, model calls, tools, retries, failures, actual tokens (or
+  `not reported`) and the separate estimate. The endpoint is read-only, and the
+  front-end contract test covers it like every other field the page reads.
 
 ### Verified
 
@@ -99,6 +103,18 @@ catalogue, and each task now leaves one measured row.
   verifications into `error` results that nothing asserted on.
 - `_extract_list` and friends: the stale `permission_decision` counter is gone from
   the report path (decisions are journal events).
+
+### Changed
+
+- `guardian record_baseline` replaces an existing baseline only with `--force`, and
+  journals the digests it replaced. Re-baselining is the one action that turns a
+  detected change into a trusted one, so it no longer happens as a side effect of a
+  setup step.
+- A command that is not on the binary allowlist is held for approval rather than
+  refused outright: `run_command` will not run it, the request is recorded, and a human
+  decides. `LIVIUM_APPROVAL_BINARIES` names programs that are approvable in advance.
+- Test fixtures that reuse a home pass `force=True` explicitly; a plain re-baseline in
+  a test now fails loudly instead of silently overwriting the previous digests.
 
 ### Security
 

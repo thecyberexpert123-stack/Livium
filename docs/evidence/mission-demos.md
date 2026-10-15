@@ -55,7 +55,7 @@ the capability was found by requirement words, its declared interface was loaded
       "word_count"
     ],
     "test_exit_code": 0,
-    "test_duration_ms": 115,
+    "test_duration_ms": 82,
     "network_isolated": null
   },
   "search_matches": [
@@ -164,7 +164,7 @@ the write was refused as requiring approval, the run stopped instead of retrying
         "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-mission/restricted/release.md\",\"purpose\":\"the release file\"}",
         "reason": "write needs approval: /tmp/livium-mission/restricted/release.md is inside an approval root (/tmp/livium-mission/restricted). A human decides, not the agent; see `livium approvals`.",
         "status": "pending",
-        "created_at": "2026-10-15T08:21:07+00:00",
+        "created_at": "2026-10-15T08:23:20+00:00",
         "decided_at": null,
         "decided_by": null,
         "note": null
@@ -233,7 +233,7 @@ a killed process left one unconfirmed side effect; the resumed run established i
       "tool": "write_file",
       "determination": "confirmed_complete",
       "detail": "/tmp/livium-mission/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
-      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052468594515156 path=/tmp/livium-mission/workspace/interrupted.md"
+      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052601071184284 path=/tmp/livium-mission/workspace/interrupted.md"
     }
   ],
   "intent_rows_after_resume": [
