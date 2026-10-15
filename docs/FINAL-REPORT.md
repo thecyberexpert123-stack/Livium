@@ -1,6 +1,6 @@
 written: docs/evidence/final-report.json
 AGENT LIVIUM — FINAL REPORT
-generated 2026-10-15T08:23:51+0000
+generated 2026-10-15T08:24:44+0000
 repository /home/user/Livium
 home /tmp/livium-release
 provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.openai.com/v1 is unreachable at https://api.openai.com/v1: TLS/SSL connection has been closed (EOF) (_ssl.c:992). Check network egress and LIVIUM_BASE_URL.)
@@ -19,8 +19,8 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
 
  3. WHAT IS VERIFIED, AND HOW
     289 test methods across 19 modules; each asserts observed behaviour against real storage and real subprocesses.
-    Last recorded full-suite run: 289 tests, exit code 0 (0 min old).
-    Journal: 118 events, 0 observed boundary violation(s), 0 refused git operation(s), 6 real provider probe(s).
+    Last recorded full-suite run: 289 tests, exit code 0 (1 min old).
+    Journal: 122 events, 0 observed boundary violation(s), 0 refused git operation(s), 8 real provider probe(s).
     Mission acceptance tests: A retrieval, B budgeting, C capability discovery, D feedback recovery, E cross-process reuse, F genuine growth, G token accounting, H permission enforcement — test_approval 17, test_hygiene 3, test_ledger 13, test_mission 18, test_router 24 test(s), all passing in the recorded run.
     Configured boundary: 20 allowed binaries, 52 denied, 0 allowed network host(s).
 
@@ -33,7 +33,7 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
     D — recovery: an interrupted write is confirmed from the real file (size, sha256) rather than assumed, and the report says which facts remain unknown.
     E — genuine capability growth: the gap was measured (memory_search returns nothing for a recency question while records exist), then proposed, implemented, tested, promoted by a named human, and used by a fresh agent.
     F — controlled rejection: a deliberately broken change fails its tests, promotion is refused, and the repaired change passes.
-    Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified (0 min old)
+    Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified (1 min old)
 
  5. PERSISTENT MEMORY
     40 record(s) live in SQLite; kinds: {'decision': 3, 'experience': 29, 'failure': 2, 'foundational': 3, 'task': 3}; verification states: {'claimed': 2, 'tested': 2, 'unverified': 26, 'verified': 10}.
