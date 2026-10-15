@@ -47,6 +47,8 @@ FRONT_END_FIELDS: tuple[tuple[str, str], ...] = (
     ("/api/status", "provider.context_window"),
     ("/api/status", "provider.context_window_source"),
     ("/api/status", "provider.is_test_double"),
+    ("/api/status", "provider.age_seconds"),
+    ("/api/status", "provider.fresh"),
     ("/api/status", "isolation.mechanism"),
     ("/api/status", "isolation.network_isolated"),
     ("/api/status", "isolation.filesystem_confined"),
@@ -148,6 +150,38 @@ class ViewerContractTests(LiviumTestCase):
                 problems.append(f"{endpoint}.{dotted} is null")
         self.assertEqual(problems, [], "front end and API have drifted apart:\n  "
                                        + "\n  ".join(problems))
+
+    def test_polling_the_status_route_does_not_probe_the_provider_every_time(self) -> None:
+        """A page that refreshes must not become a request per refresh.
+
+        Every probe is a real network call and a real `provider_probe` row. A viewer that
+        polls on a timer would otherwise fill the journal with probes and measure its own
+        timer rather than the provider -- and the badge would claim a freshness it did not
+        have. The explicit `probe=1` is how a fresh answer is asked for.
+        """
+
+        store = self.state.agent.store
+        before = len(store.query("SELECT id FROM event WHERE type='provider_probe'"))
+        for _ in range(3):
+            self.get("/api/status")
+        after_polls = len(store.query("SELECT id FROM event WHERE type='provider_probe'"))
+        self.assertEqual(after_polls, before,
+                         "three polls of /api/status wrote provider_probe rows")
+
+        payload = self.get("/api/status?probe=1")
+        self.assertTrue(payload["provider"]["fresh"])
+        self.assertEqual(payload["provider"]["age_seconds"], 0.0)
+        after_fresh = len(store.query("SELECT id FROM event WHERE type='provider_probe'"))
+        self.assertEqual(after_fresh, before + 1,
+                         "an explicit probe did not record exactly one probe")
+
+        # ...and a poll after a fresh probe reports how old the answer is, rather than
+        # pretending it was just taken.
+        cached = self.get("/api/status")
+        self.assertFalse(cached["provider"]["fresh"])
+        self.assertGreaterEqual(cached["provider"]["age_seconds"], 0.0)
+        self.assertEqual(len(store.query("SELECT id FROM event WHERE type='provider_probe'")),
+                         after_fresh)
 
     def test_the_declared_contract_covers_every_data_read_in_the_front_end(self) -> None:
         """Every payload path app.js reads must appear in the declared contract.

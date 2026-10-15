@@ -17,6 +17,7 @@ import dataclasses
 import json
 import pathlib
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -42,14 +43,49 @@ class ApiState:
     """One agent, one lock. Task runs are serialised so two runs cannot interleave
     their intents and confuse recovery."""
 
+    #: How long a provider probe stays usable for the viewer. A page that polls is not a
+    #: reason to make a network request, so the answer is stamped and reused; asking for
+    #: a fresh one is an explicit act, not a side effect of a timer.
+    PROBE_TTL_SECONDS = 300.0
+
     def __init__(self, config: Config):
         self.config = config
         self.agent = LiviumAgent(config)
         self.lock = threading.Lock()
         self.startup = self.agent.start()
+        self._probe: dict[str, Any] | None = None
+        self._probe_at = 0.0
+        # The startup probe already answered the question once; reuse it rather than
+        # asking a second time the moment the first page is opened.
+        started = self.startup.get("provider_probe")
+        if isinstance(started, dict):
+            self._probe = started
+            self._probe_at = time.time()
 
     def close(self) -> None:
         self.agent.close()
+
+    def provider_snapshot(self, fresh: bool = False) -> dict[str, Any]:
+        """The provider's state, probed when it is stale and reused when it is not.
+
+        Every probe is a real request to the provider and a real row in the journal, so a
+        viewer that polls must not produce one per poll: that would measure the view's
+        timer instead of the provider. The age travels with the answer, and `probe=1`
+        asks for a fresh one when the operator wants to know *now*.
+        """
+
+        age = time.time() - self._probe_at if self._probe else None
+        if fresh or self._probe is None or age is None or age > self.PROBE_TTL_SECONDS:
+            self._probe = self.agent.probe_provider()
+            self._probe_at = time.time()
+            age = 0.0
+            fresh_probe = True
+        else:
+            fresh_probe = False
+        payload = dict(self._probe)
+        payload["age_seconds"] = round(age, 1)
+        payload["fresh"] = fresh_probe
+        return payload
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -110,7 +146,9 @@ class Handler(BaseHTTPRequestHandler):
                 "startup": self.state.startup,
                 "status": agent.status(),
                 "isolation": agent.runner.isolation.as_dict(),
-                "provider": agent.probe_provider(),
+                # Cached by default, because this route is polled: see provider_snapshot.
+                "provider": self.state.provider_snapshot(
+                    fresh=(query.get("probe") or ["0"])[0] == "1"),
             })
         if route == "/api/guardian":
             guardian = agent.guardian

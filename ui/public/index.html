@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Livium Studio</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='24' font-size='24'>🛠</text></svg>">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Livium Studio</h1>
+    <span class="sub" id="home-path">runtime home: …</span>
+  </div>
+  <div class="badges" id="top-badges"></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="chat" class="active">Chat</button>
+    <button data-tab="workbench">Workbench</button>
+    <button data-tab="workspace">Workspace</button>
+    <button data-tab="journal">Journal</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <p id="alert" class="alert hidden"></p>
+
+  <!-- ---------------------------------------------------------------- chat -->
+  <section class="panel" id="panel-chat">
+    <div class="split">
+      <aside class="list" id="task-list">
+        <div class="list-head">
+          <strong>History</strong>
+          <button class="link" id="reload-tasks">reload</button>
+        </div>
+        <div id="tasks"></div>
+      </aside>
+      <div class="conversation">
+        <div class="conversation-head">
+          <div>
+            <strong id="chat-title">No task selected</strong>
+            <div class="sub" id="chat-sub">Start a task below, or pick one from the history.</div>
+          </div>
+          <div class="row" id="run-controls"></div>
+        </div>
+        <div id="chat-verification" class="checks"></div>
+        <div id="transcript" class="transcript"><p class="empty">Nothing selected yet.</p></div>
+
+        <form class="composer" id="composer">
+          <textarea id="objective" rows="3"
+            placeholder="Tell the agent what to do. It works in the workspace and shows you every step. e.g. &quot;Write a report.md in the workspace summarising every .txt file there, then verify it exists.&quot;"></textarea>
+          <div class="composer-row">
+            <label class="check"><input type="checkbox" id="force"> run even if the provider probe fails</label>
+            <label class="check"><input type="checkbox" id="resume"> resume this task id first</label>
+            <input id="criteria" class="grow" placeholder='optional acceptance criteria, JSON: [{"kind":"file_exists","path":"workspace/report.md"}]'>
+            <button type="submit" id="send">Run task</button>
+          </div>
+          <div class="hint" id="composer-hint">Tasks run as real processes; the transcript comes from the runtime's own journal.</div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- workbench -->
+  <section class="panel hidden" id="panel-workbench">
+    <div class="cards">
+      <div class="card">
+        <h2>Live run</h2>
+        <div id="run-live"><p class="empty">No run yet.</p></div>
+      </div>
+      <div class="card">
+        <h2>What it made</h2>
+        <div id="artifacts"><p class="empty">Nothing written by the selected task.</p></div>
+      </div>
+      <div class="card wide">
+        <h2>Steps</h2>
+        <div id="steps"><p class="empty">No steps recorded.</p></div>
+      </div>
+      <div class="card wide">
+        <h2>Process output <span class="hint-inline">stdout/stderr of the run, as it arrives</span></h2>
+        <pre id="run-log" class="log">(empty)</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- workspace -->
+  <section class="panel hidden" id="panel-workspace">
+    <div class="split">
+      <aside class="list">
+        <div class="list-head"><strong>Files</strong></div>
+        <label class="sub" for="root-select">root</label>
+        <select id="root-select"></select>
+        <div id="crumbs" class="crumbs"></div>
+        <div id="drop" class="drop">drop files here to upload</div>
+        <div id="file-list"></div>
+      </aside>
+      <div class="conversation">
+        <div class="conversation-head">
+          <div>
+            <strong id="file-title">Select a file</strong>
+            <div class="sub" id="file-sub">Preview, digest and download live here.</div>
+          </div>
+          <div class="row">
+            <button id="new-folder" class="ghost">new folder</button>
+            <button id="delete-entry" class="ghost danger">delete</button>
+          </div>
+        </div>
+        <div id="recent" class="hint"></div>
+        <pre id="file-preview" class="preview">(nothing selected)</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------- journal -->
+  <section class="panel hidden" id="panel-journal">
+    <div class="cards">
+      <div class="card wide">
+        <h2>Journal <span class="hint-inline">the append-only record of everything that ran</span></h2>
+        <div class="row">
+          <select id="event-type"><option value="">all types</option></select>
+          <button id="reload-events" class="ghost">reload</button>
+          <span class="sub" id="event-count"></span>
+        </div>
+        <div id="events" class="events"></div>
+      </div>
+      <div class="card">
+        <h2>Capabilities</h2>
+        <div id="capabilities"></div>
+      </div>
+      <div class="card">
+        <h2>Deferred work</h2>
+        <div id="discovery"></div>
+      </div>
+      <div class="card">
+        <h2>Integrity</h2>
+        <div id="integrity"></div>
+      </div>
+      <div class="card">
+        <h2>Measured cost</h2>
+        <div id="ledger"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------ settings -->
+  <section class="panel hidden" id="panel-settings">
+    <div class="cards">
+      <div class="card wide">
+        <h2>Provider</h2>
+        <p class="hint">The key is written to <code id="settings-path"></code> with mode 0600 and
+          handed to the runtime through its environment. It is never sent back to this page: you
+          see a hint and a fingerprint, never the value.</p>
+        <form id="settings-form" class="grid">
+          <label>provider
+            <select id="provider">
+              <option value="openai_compatible">openai_compatible (OpenAI, or anything compatible)</option>
+              <option value="anthropic">anthropic</option>
+              <option value="ollama">ollama (local)</option>
+              <option value="scripted">scripted (test double: no real model)</option>
+            </select>
+          </label>
+          <label>model <input id="model" placeholder="gpt-4o-mini / claude-3-5-sonnet-latest / llama3.1"></label>
+          <label>base URL <input id="base-url" placeholder="https://api.openai.com/v1 (blank = provider default)"></label>
+          <label>API key
+            <span class="row">
+              <input id="api-key" type="password" autocomplete="off" placeholder="paste the key; it is never echoed back">
+              <button type="button" class="ghost" id="toggle-key">show</button>
+              <button type="button" class="ghost" id="clear-key">clear</button>
+            </span>
+          </label>
+          <div class="row">
+            <button type="submit" id="save-settings">Save and restart the runtime</button>
+            <button type="button" class="ghost" id="save-only">Save only</button>
+            <button type="button" class="ghost" id="test-provider">Validate against the provider</button>
+            <button type="button" class="ghost" id="reprobe">Re-probe now, without restarting</button>
+          </div>
+        </form>
+        <div id="settings-note" class="hint"></div>
+      </div>
+
+      <div class="card">
+        <h2>What the runtime says</h2>
+        <div id="provider-state"></div>
+      </div>
+
+      <div class="card">
+        <h2>Extra environment</h2>
+        <p class="hint">One <code>NAME=value</code> per line. Anything the runtime reads can be set
+          here; the settings panel warns when a variable changes what a result would mean.</p>
+        <textarea id="extra-env" rows="6" placeholder="LIVIUM_MAX_STEPS=12&#10;LIVIUM_FOLLOWUP_MAX_MODEL_CALLS=4"></textarea>
+      </div>
+
+      <div class="card wide">
+        <h2>Runtime backend log</h2>
+        <pre id="backend-log" class="log">(empty)</pre>
+        <div class="row"><button class="ghost" id="restart-backend">restart the runtime</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

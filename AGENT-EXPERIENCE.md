@@ -388,6 +388,62 @@ model calls under a two-call limit.
 
 ---
 
+## 32. A page that served its HTML and 404'd its script
+
+**What happened.** The Studio's page loaded, and nothing worked. The HTML came back 200
+with a `<script src="/static/app.js">`, and the server resolved that to
+`public/static/app.js` — a directory that has never existed. Both assets were 404s. Every
+API the page used was healthy, so every test I had written passed; the bug lived precisely
+in the gap between "the server answers" and "the page does something".
+
+**What changed.** The `/static/` prefix is stripped before the containment check, the way
+the Python viewer already did it, and a test now fetches the three things a browser asks
+for on load. The lesson generalises: fetch what the artefact you ship actually references
+— a front end is not verified by the endpoints it calls.
+
+## 33. A poll that became a probe
+
+**What happened.** The console polls `/studio/api/state` every eight seconds, and that
+route called `/api/status`, which ran a real provider probe: one network request and one
+`provider_probe` journal row *per call*. A page left open for an hour would have written
+hundreds of rows about the viewer's own refresh timer, and the "provider verified" badge
+would have been measuring the browser. The Python viewer had the same defect on a fifteen
+second timer; the console did not cause it, it made it visible.
+
+**What changed.** The probe is cached, returned with `age_seconds` and `fresh`, and
+`?probe=1` asks for a new one; the page asks once per load and shows the age. The
+regression test is a count: three polls add no rows, one explicit probe adds exactly one,
+and the poll afterwards reports `fresh: false` with an age. A read route that is going to
+be polled must not have side effects — and if it must, it has to say how old its answer is.
+
+## 34. `null` read as zero
+
+**What happened.** The provider payload reports usage as `{"input_tokens": null,
+"output_tokens": null}` when the provider reported nothing — which is what the scripted
+double always does. The transcript's check was `usage.prompt_tokens ?? usage.input_tokens`
+and compared the result to `undefined`, so `null ?? null` fell through to the other branch
+and rendered "0 prompt + 0 completion". The UI was stating a measurement that had not been
+taken, in the one panel whose job is to distinguish measured from estimated.
+
+**What changed.** `null` and a missing value are treated alike, the runtime's own estimate
+is shown as `~2833 prompt tokens estimated (the provider reported no usage)`, and a test
+pins both branches. "Unknown" is a value the UI has to be able to display.
+
+## 35. Two records disagreed, so both are shown
+
+**What happened.** A transcript can be built from the task row (what the operator asked
+for) or from the `task_started` event (what the run was started with). For a resumed task
+the two can differ. The first version preferred the event, so the panel showed an objective
+the operator had not typed; preferring the row would have hidden the fact that the run was
+started with something else.
+
+**What changed.** The row is shown as what was asked, and when the journalled objective
+differs, it is carried in the message's metadata instead of being resolved away. When two
+real records disagree, that disagreement is information — silently picking a winner
+destroys it.
+
+---
+
 ## Rules derived from these lessons
 
 The agent's growth instructions (`livium/prompts/GROWTH.md`) encode the operational
@@ -428,3 +484,9 @@ form of the above, and `AGENTS.md` carries them into the workspace:
     eventually be read as the more flattering of the two.
 19. When a stop is journalled, name it with the same sentence everywhere: two names for
     one limit read as two limits.
+20. Verify the artefact you ship, not just the API it calls: fetch the assets the page
+    references.
+21. A route that will be polled must not have side effects, and an answer that is reused
+    must carry its age.
+22. "Unknown" and "zero" are different values; a UI that cannot display the first will
+    eventually display the second.

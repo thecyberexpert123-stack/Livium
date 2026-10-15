@@ -3,6 +3,65 @@
 All notable changes to Agent Livium. Every entry states what was verified and how,
 because a change that was never exercised is not a change that works.
 
+## [0.4.0] — the Studio
+
+An operator console in Node (`ui/`), with no npm dependencies and no build step. Nothing
+in the runtime's behaviour changed, and the Python suite grew by one test for a defect the
+console exposed.
+
+### Added
+
+**The console** (`ui/`, new: `server.mjs`, `lib/{paths,settings,backend,session}.mjs`,
+`public/{index.html,styles.css,app.js}`)
+- Five views over the real runtime: the task history and transcript, a live view of a run
+  in progress, the workspace the agent works in, the runtime's own journal, and settings.
+- It starts `livium serve` on a free port and proxies `/api/*` to it, and it starts
+  `livium run` as a child process per task. Permissions, verification, approvals and the
+  ledger stay in the Python runtime: the Studio is a client, not a second agent.
+- The API key is entered in the page, stored 0600 in a 0700 directory, and passed to
+  children as `LIVIUM_API_KEY` through the environment. Responses carry only
+  `api_key_set` / `api_key_length` / a hint; the key is scrubbed from outgoing text and is
+  never logged. A test asserts a saved key does not appear in the state payload.
+- Workspace containment is checked twice — textually and after following symlinks — over
+  HTTP, and both refusals are tested (a link inside the workspace pointing at
+  `/etc/passwd` is the case that a single check misses).
+- The transcript is derived from journalled events: artifacts carry the digest the
+  runtime recorded, a denied tool call is shown as a refusal by the permission engine,
+  and a task with no acceptance criteria is labelled *unverified* rather than verified.
+  `provider` usage that the provider did not report is shown as an estimate with its
+  source, never as `0`.
+
+**Runtime: a probe cache on the read-only status route** (`livium/server.py`)
+- `/api/status` probed the provider — a real network request and a real
+  `provider_probe` journal row — on *every* call. The viewer polls that route, so a page
+  left open filled the journal with its own refresh timer. The answer is now cached for
+  five minutes, returned with `age_seconds` and `fresh`, and `?probe=1` asks for a new
+  one. `web/app.js` asks once per page load and shows the age next to the badge.
+- Tested: three polls of `/api/status` add no `provider_probe` rows; an explicit probe
+  adds exactly one; a poll afterwards reports the age and `fresh: false`.
+
+### Fixed
+
+- `ui/server.mjs` served `/static/app.js` and `/static/styles.css` as 404s: the page
+  referred to its assets under `/static/`, which is URL vocabulary rather than a real
+  directory. The prefix is stripped before the containment check, and a test fetches both.
+- `livium/execution.py`: a per-call `timeout` was accepted and ignored, so a command
+  that should have been killed after two seconds ran for thirty-two. The limit is now
+  clamped to `max(0.5, min(call, configured))` and applied to the kill.
+- `livium/execution.py`: when the working directory did not exist, the command died with
+  a bare `[Errno 2]` from the spawn — an error that named a file the caller never asked
+  for. The directory is created, or the failure names the directory.
+
+### Changed
+
+- `livium/models.py`: the scripted test double can be driven from a file
+  (`LIVIUM_SCRIPT_FILE`), so a *separate process* — a demo, the Studio, a recovery test —
+  can exercise the loop with a real child process and no network. It is gated behind
+  `LIVIUM_ALLOW_TEST_DOUBLE=1` exactly as before, and every reply stays marked as a test
+  double. `.env.example` documents both.
+- The Studio binds `127.0.0.1` by default and warns when told to bind wider; it has no
+  authentication and can write into the workspace.
+
 ## [0.3.0] — integrity response and deferred discovery
 
 Two failures of 0.2.0 are closed. A detected modification of a protected component was

@@ -6,4 +6,4 @@ cannot do its job in a given environment it says so (see `livium.models`), it
 does not pretend.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

@@ -1,0 +1,16 @@
+{
+  "name": "livium-studio",
+  "version": "0.3.0",
+  "private": true,
+  "description": "The Livium Studio: an operator UI for a runtime that lives in Python.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

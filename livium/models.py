@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import pathlib
 import time
 import urllib.error
 import urllib.request
@@ -600,6 +602,34 @@ class OllamaClient(ModelClient):
         )
 
 
+def _script_from_environment() -> list[dict[str, Any]]:
+    """Replies for the test double, from ``LIVIUM_SCRIPT_FILE``.
+
+    In-process tests pass their script directly. A *separate process* -- a demo, the
+    Studio UI, a recovery test -- has no way to pass an object, so it names a JSON file
+    instead. This is a test-only seam and it is gated exactly like the client itself:
+    without ``LIVIUM_ALLOW_TEST_DOUBLE=1`` the client refuses to exist at all, and every
+    reply it produces stays marked ``is_test_double``. A missing or malformed file is an
+    error, not an empty script: a run that silently gets no replies would look like a
+    model failure.
+    """
+
+    path = os.environ.get("LIVIUM_SCRIPT_FILE")
+    if not path:
+        return []
+    file = pathlib.Path(path)
+    try:
+        payload = json.loads(file.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ModelError(f"LIVIUM_SCRIPT_FILE={path} cannot be read: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ModelError(f"LIVIUM_SCRIPT_FILE={path} is not JSON: {exc}") from exc
+    if not isinstance(payload, list) or any(not isinstance(entry, dict) for entry in payload):
+        raise ModelError(f"LIVIUM_SCRIPT_FILE={path} must contain a JSON array of reply "
+                         f"objects, each with optional keys: text, tool_calls, stop_reason")
+    return payload
+
+
 class ScriptedClient(ModelClient):
     """A test double. Not a provider.
 
@@ -622,7 +652,7 @@ class ScriptedClient(ModelClient):
         super().__init__(config)
         self.name = "scripted-test-double"
         self.is_test_double = True
-        self.script = list(script or [])
+        self.script = list(script) if script else _script_from_environment()
         self.calls: list[dict[str, Any]] = []
         self._index = 0
 

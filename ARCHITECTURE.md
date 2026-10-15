@@ -50,6 +50,14 @@ livium/
   cli.py           operator surface
   server.py        HTTP API + viewer (stdlib http.server)
   web/             dependency-free ES-module front end
+ui/                the Studio: an operator console, in Node, with no dependencies
+  server.mjs       static files, the console API, and a same-origin proxy to `livium serve`
+  lib/paths.mjs    workspace containment (textual *and* after symlinks are followed)
+  lib/settings.mjs the key and the settings file: 0600, one-way, never echoed
+  lib/session.mjs  journal events -> a transcript, a verdict and an artifact list
+  lib/backend.mjs  the child processes: `livium serve` and one `livium run` per task
+  public/          the page itself (no framework, no build step)
+  test/            node --test: containment, the key, the run, the transcript, the contract
   prompts/         protected instruction files (FOUNDATIONAL, CONTRACT, GROWTH)
   promoted/        human-promoted capability modules, loaded at startup
 ```
@@ -369,6 +377,42 @@ watched set with each component's tier and rationale, the current inspection, th
 append-only record and the enforcement history. That route inspects with `record=False`:
 a viewer that polls every few seconds must not fill an append-only security record with
 its own refresh timer, and a test asserts the poll writes nothing.
+
+## The Studio: a console, not a second agent
+
+`ui/` is a Node HTTP server (Node 20+, zero npm dependencies) that does three things and
+nothing else: it serves a page, it proxies `/api/*` to `livium serve`, and it starts
+`livium run` as a child process when the operator asks for a task. There is no second
+permission engine, no second loop and no second journal. When the page shows a refusal,
+a verification state, a written file or a token count, that value came over HTTP from the
+Python runtime or out of the runtime's database — the transport is the only thing the
+Studio adds.
+
+This is a design constraint with consequences that are visible in the code:
+
+- **The API key goes one way.** It is typed into the page, written to
+  `<studio home>/settings.json` with mode 0600 in a 0700 directory, and passed to child
+  processes as `LIVIUM_API_KEY` through the environment. Responses carry `api_key_set`,
+  `api_key_length` and a hint; the key itself is never returned, never logged, and is
+  redacted from any outgoing string. A test asserts a saved key does not appear in the
+  state payload.
+- **Two halves of a path check.** Every workspace path is checked textually *and* after
+  following symlinks, because a link inside the workspace that points at `/etc/passwd`
+  passes the first check. Both refusals are tested.
+- **The transcript is derived, never narrated.** `lib/session.mjs` maps journalled events
+  to messages, artifacts and refusals. A task with no records produces an empty panel
+  that says so; a task with no acceptance criteria is labelled unverified rather than
+  verified-by-default.
+- **A poll is not a probe.** The runtime caches its provider probe and reports how old
+  the answer is; `probe=1` asks for a fresh one. Without this, a page polling every eight
+  seconds would turn a timer into a stream of provider requests and journal rows — and the
+  "provider verified" badge would be measuring the browser.
+- **Localhost by default.** The console has no authentication and can write into the
+  workspace, so widening the binding is an explicit flag, and the banner says so.
+
+The Studio never holds state that the runtime can contradict: it keeps the last
+`livium run` child per task so it can show a log and stop a task, and everything else is
+fetched.
 
 ## Why Python, and why no other language
 

@@ -49,9 +49,10 @@ Livium's agent runtime needs a model to drive it. Everything *around* the model 
 independently runnable and testable:
 
 ```bash
-python3 -m unittest discover -s tests -t tests      # 358 tests, ~35s, no network
+python3 -m unittest discover -s tests -t tests      # 359 tests, ~30s, no network
 python3 demos/run_demonstrations.py                 # the six mandatory demonstrations
 python3 demos/run_mission_demos.py --approve-as "Your Name"   # the mission demonstrations
+cd ui && node --test                                # 40 tests for the operator console
 ```
 
 ---
@@ -123,6 +124,54 @@ livium integrity restore PATH --approved-by NAME --reason WHY
 livium selftest [--record]        run the repository test suite; --record feeds `livium report`
 livium serve [--port 8787]        HTTP API + live viewer
 ```
+
+---
+
+## Studio
+
+`ui/` is an operator console for the runtime, written in Node with **no npm
+dependencies** and no build step:
+
+```bash
+node ui/server.mjs --port 8899          # http://127.0.0.1:8899
+node ui/server.mjs --help               # --port, --home, --host, --print-home
+cd ui && node --test                    # the console's own tests
+```
+
+It starts `livium serve` for you on a free port and proxies to it, so the buttons and
+the viewer act on the same runtime, the same database and the same permission engine.
+
+| Tab | What it is for |
+| --- | --- |
+| **Chat** | the task history, the acceptance checks with the outcome the runtime recorded for each one, the transcript of one task, and a composer that starts a real `livium run` |
+| **Workbench** | the live view of a run: its state, its log, the files it wrote with their digests, and its steps |
+| **Workspace** | the directory the agent works in — browse, preview, download, upload, create, delete, with the runtime home and the evidence directory a click away |
+| **Journal** | the runtime's own records: events, capabilities, deferred work, integrity, and one measured ledger row per task |
+| **Settings** | the provider, the model, the base URL and the API key, plus a real provider probe |
+
+The console has three settings of its own; they are environment variables because they
+belong to the console's own process, and `.env` is the runtime's file:
+
+| Variable / flag | Default | Meaning |
+| --- | --- | --- |
+| `LIVIUM_STUDIO_HOME` / `--home` | `<repo>/.livium` | where `settings.json` lives, and the runtime home the console drives |
+| `LIVIUM_PYTHON` | `python3` | the interpreter that has this repository on `PYTHONPATH` |
+| `LIVIUM_STUDIO_NO_BACKEND=1` | unset | do not spawn `livium serve` (the runtime is already running elsewhere) |
+| `--host 0.0.0.0` | `127.0.0.1` | bind wider; the banner warns, because there is no authentication |
+
+Three things are worth knowing before you use it:
+
+- **The API key is written, not remembered.** It goes to `<studio home>/settings.json`
+  (mode 0600, directory 0700) and reaches the runtime through the child process
+  environment. The API returns whether a key is set, how long it is and a hint — never
+  the key — and outgoing error text is scrubbed. The Studio is not in the chat: do not
+  paste secrets into a conversation.
+- **It is a console, not a second agent.** Every permission decision, verification and
+  journal row is produced by the Python runtime; the Studio starts a real `livium run`
+  and shows what the runtime recorded. A panel with no records says so instead of
+  rendering something plausible.
+- **It has no authentication.** It binds `127.0.0.1` by default; `--host 0.0.0.0` is for
+  when you put your own authentication in front of it, and the banner warns when you do.
 
 ---
 

@@ -57,17 +57,24 @@ function truncateList(items, limit = 6) {
 }
 
 // ------------------------------------------------------------------ panels
+//: The provider probe is real work (a network request and a journal row), so the server
+//: caches it and this page asks for a fresh one once, when it first loads. After that the
+//: badge carries the age, because a cached "verified" that hides its age is a claim.
+let probedOnce = false;
+
 async function refreshStatus() {
   const [data, perms] = await Promise.all([
-    getJSON("/api/status"),
+    getJSON(probedOnce ? "/api/status" : "/api/status?probe=1"),
     getJSON("/api/permissions"),
   ]);
+  probedOnce = true;
   const { startup, status, isolation, provider } = data;
   const guardian = status.guardian;
 
+  const probed = provider.fresh ? "just now" : `${Math.round(provider.age_seconds ?? 0)}s ago`;
   const providerBadge = provider.ok
-    ? badge(`${provider.model} verified`, "ok")
-    : badge("provider unverified", "bad");
+    ? badge(`${provider.model} verified · probed ${probed}`, "ok")
+    : badge(`provider unverified · probed ${probed}`, "bad");
   const integrityBadge = guardian.integrity.ok
     ? badge("guardian intact", "ok")
     : badge("guardian not established", "warn");

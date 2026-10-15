@@ -260,3 +260,30 @@ and stays `ready`, and it is not retried automatically: it waits for a later cyc
 the next task that notices the same thing. The ledger reports these attempts in their own
 column (`followups_stopped`) rather than counting them as investigations that concluded, which
 means the two numbers have to be read together.
+
+## 20. The Studio is a console with no authentication, and its transcript is second-hand
+
+**What it is.** `ui/` serves a page, proxies the runtime's read-only API, and starts
+`livium run` for a task. It holds no agent logic: every permission decision, verification
+and journal row it displays was produced by the Python runtime.
+
+**What it does not protect.** There is no login, no session and no CSRF token beyond a
+required `X-Livium-Studio` header on writes (which stops a cross-site form, not a local
+process). Anything that can reach the port can start a task, read the workspace and
+delete files in it, so the default binding is `127.0.0.1` and `--host 0.0.0.0` is an
+explicit, warned-about act. The API key itself is *not* exposed: it is stored 0600, sent
+to children through the environment, and never returned by the API — but the runtime it
+drives holds a credential, and a caller who can reach the port can spend it.
+
+**Where the transcript can be incomplete.** `lib/session.mjs` renders only the events the
+runtime journalled. A task that predates the journal, a run interrupted before any event
+was written, or a message the runtime chose not to journal appears as nothing — the panel
+says a task has no records rather than filling the gap. Two further limits: the transcript
+shows the task row's objective while a resumed task may have been started with a different
+one (the difference is shown, not resolved), and the token figures are the provider's own
+report when there is one and a labelled estimate otherwise.
+
+**What "verified" means in the UI.** It is the runtime's verdict on the acceptance
+criteria, not a judgement of the work's quality: a criterion can be weak, and a task with
+no criteria is shown as *unverified* for exactly that reason. The Studio does not add a
+criterion, and nothing it displays should be read as one.
