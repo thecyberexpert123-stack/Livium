@@ -42,7 +42,7 @@ class AgentFixture(LiviumTestCase):
         # were silently running with the defaults.
         agent = self.agent(script=script, **env)
         agent.start()
-        agent.guardian.record_baseline(approved_by="Test Human")
+        agent.guardian.record_baseline(approved_by="Test Human", force=True)
         return agent
 
 
@@ -282,7 +282,7 @@ class CapabilityContextTests(AgentFixture):
         (lab / "test_peek.py").write_text(_PEEK_TEST, encoding="utf-8")
         result = registry.run_tests("peek")
         self.assertTrue(result["passed"], result["stderr"])
-        first.guardian.record_baseline(approved_by="Test Human")
+        first.guardian.record_baseline(approved_by="Test Human", force=True)
         registry.promote("peek", approved_by="Test Human",
                          guardian_check=lambda: first.guardian.promotion_gate("peek"))
         first.close()

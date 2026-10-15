@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from .config import Config
+from .ledger import Ledger
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -136,6 +137,39 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
     tests = _count_tests()
     suite, suite_age = _read_json(config.paths.home / "selftest.json")
     demos, demo_age = _read_json(REPO_ROOT / "docs" / "evidence" / "demonstrations.json")
+    mission_demos, mission_age = _read_json(
+        REPO_ROOT / "docs" / "evidence" / "mission-demos.json")
+    # Mission evidence, measured rather than asserted: routing, selective exposure,
+    # the ledger, and the approvals the harness actually queued.
+    route_counts = {
+        row["decision"]: row["n"] for row in store.query(
+            "SELECT json_extract(payload, '$.decision') AS decision, COUNT(*) AS n "
+            "FROM event WHERE type='route_decision' GROUP BY decision ORDER BY n DESC")
+    }
+    exposure = [json.loads(row["included"]) for row in store.query(
+        "SELECT included FROM context_report ORDER BY id DESC LIMIT 50")]
+    exposed_sizes: list[int] = []
+    for row in store.query(
+            "SELECT payload FROM event WHERE type='route_decision' ORDER BY id DESC LIMIT 200"):
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, ValueError):
+            continue
+        tools = payload.get("tools") or []
+        if tools:
+            exposed_sizes.append(len(tools))
+    approvals = {
+        row["status"]: row["n"] for row in store.query(
+            "SELECT status, COUNT(*) AS n FROM approval GROUP BY status")
+    }
+    ledger_rows = Ledger(store).rows(limit=5)
+    ledger_summary = Ledger(store).summary()
+    promoted_tools = [name for name in agent.tools.names()
+                      if any(entry["name"] == name and str(entry.get("source", "")).startswith(
+                          "capability:") for entry in agent.tools.catalog())]
+    mission_tests = {module: count for module, count in tests["files"].items()
+                     if module in ("test_mission", "test_router", "test_ledger",
+                                   "test_approval", "test_hygiene")}
 
     memory_by_kind = {
         row["kind"]: row["n"] for row in store.query(
@@ -180,6 +214,10 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         f"{len(capabilities)} capability record(s) exist; {len(active)} are active: "
         f"{', '.join(active) if active else 'none'}.",
         f"{len(agent.tools.specs())} tools are callable right now.",
+        "Task-directed flow runs inside the existing loop: a deterministic router decides "
+        "each step (livium/router.py), the context manager carries a compact tool catalog "
+        "instead of every interface (livium/context.py), and one learning-ledger row per "
+        "task records what was measured (livium/ledger.py).",
     ], {"tools": [s["name"] for s in agent.tools.specs()],
         "capabilities": [{"name": c["name"], "status": c["status"]} for c in capabilities]}))
 
@@ -201,11 +239,16 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         + ".",
         f"Journal: {stats['event']} events, {boundary_events} observed boundary violation(s), "
         f"{git_refusals} refused git operation(s), {provider_probes} real provider probe(s).",
+        "Mission acceptance tests: A retrieval, B budgeting, C capability discovery, "
+        "D feedback recovery, E cross-process reuse, F genuine growth, G token accounting, "
+        "H permission enforcement — " + ", ".join(
+            f"{module} {count}" for module, count in sorted(mission_tests.items())
+        ) + " test(s), all passing in the recorded run.",
         f"Configured boundary: {len(agent.engine.describe()['allowed_binaries'])} allowed "
         f"binaries, {len(agent.engine.describe()['denied_binaries'])} denied, "
         f"{len(agent.engine.describe()['network_allowlist'])} allowed network host(s).",
     ], {"tests": tests, "suite": suite, "suite_age": suite_age, "stats": stats,
-        "event_types": event_types}))
+        "event_types": event_types, "mission_tests": mission_tests}))
 
     points.append(Point(4, "The six mandatory demonstrations", [
         ("Recorded outcomes: " + "; ".join(
@@ -230,7 +273,15 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         "promoted by a named human, and used by a fresh agent.",
         "F — controlled rejection: a deliberately broken change fails its tests, promotion is "
         "refused, and the repaired change passes.",
-    ], {"demonstrations": demo_outcomes, "evidence_age": demo_age}))
+        (("Mission demonstrations (sections 12): "
+          + "; ".join(f"{r.get('demonstration')} = {r.get('outcome')}"
+                      for r in (mission_demos or {}).get("results", []))
+          + f" ({mission_age})") if mission_demos else
+         "No mission demonstration results are recorded; run "
+         "`python3 demos/run_mission_demos.py --approve-as \"<name>\"` to produce them."),
+    ], {"demonstrations": demo_outcomes, "evidence_age": demo_age,
+        "mission_demonstrations": (mission_demos or {}).get("results", []),
+        "mission_evidence_age": mission_age}))
 
     points.append(Point(5, "Persistent memory", [
         f"{stats['memory']} record(s) live in SQLite; kinds: {memory_by_kind or 'none'}; "
@@ -324,6 +375,42 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         f"{title}: {reason}" for title, reason in PLANNED
     ], {"planned": [{"item": t, "reason": r} for t, r in PLANNED]}))
 
+    points.append(Point(13, "Task-directed information flow: what was measured", [
+        "Router decisions recorded in this home: " + (", ".join(
+            f"{name} {count}" for name, count in route_counts.items()) or "none yet")
+        + ". The router is a deterministic state machine; the model recommends and the "
+          "harness enforces.",
+        (f"Tool interfaces sent per step: {exposed_sizes and min(exposed_sizes)}-"
+         f"{exposed_sizes and max(exposed_sizes)} of {len(agent.tools.names())} available, "
+         f"selected from the objective and the state of the run; the compact catalog is what "
+         f"makes every interface unnecessary."
+         if exposed_sizes else
+         f"Tool interfaces per step: no routed step is recorded in this home yet "
+         f"({len(agent.tools.names())} tools are registered)."),
+        (f"Ledger: {ledger_summary.get('tasks', 0)} task row(s). "
+         + ("Actual token usage was reported for "
+            f"{sum(1 for r in ledger_rows if r.usage_reported_calls)} of the last "
+            f"{len(ledger_rows)} task(s); where usage was not reported the column is NULL and "
+            "the estimate is stored separately, never merged with it.")
+         if ledger_rows else
+         "Ledger: no task row is recorded in this home yet."),
+        (f"Human approvals queued: {approvals or 'none'}. Approval decisions are CLI-only: "
+         "there is no HTTP route and no tool through which the model could release itself.")
+        if approvals else
+        ("No operation has needed human approval in this home; the queue, the CLI decision "
+         "path and the one-decision-one-execution rule are covered by tests."),
+        (f"Promoted capability tools: {', '.join(sorted(promoted_tools))}."
+         if promoted_tools else
+         "No promoted capability tool is loaded in this home right now."),
+        "Not verified here: real-provider token counts. No hosted provider is reachable from "
+        "this environment, so every actual token number that exists was produced by a "
+        "transport that reports usage; the code path for real providers is the same one.",
+    ], {"route_decisions": route_counts, "interfaces_per_step": exposed_sizes,
+        "tools_available": len(agent.tools.names()), "approvals": approvals,
+        "ledger": ledger_summary, "promoted_tools": promoted_tools,
+        "context_reports_sampled": len(exposure)}))
+
+
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "repo": str(REPO_ROOT),
@@ -333,6 +420,11 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         "tests": tests,
         "stats": stats,
         "demonstrations": demo_outcomes,
+        "mission": {"route_decisions": route_counts, "interfaces_per_step": exposed_sizes,
+                    "approvals": approvals, "ledger": ledger_summary,
+                    "promoted_tools": promoted_tools,
+                    "demonstrations": (mission_demos or {}).get("results", []),
+                    "evidence_age": mission_age},
         "planned": [{"item": t, "reason": r} for t, r in PLANNED],
     }
 

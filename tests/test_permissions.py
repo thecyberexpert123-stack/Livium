@@ -149,5 +149,45 @@ class NetworkPolicyTests(LiviumTestCase):
         self.assertEqual(engine.check_network("file:///etc/passwd").outcome, DENY)
 
 
+class VerificationReadTests(LiviumTestCase):
+    """The one read that a write-authorising configuration has to permit.
+
+    Without this, an operation a human approved can be performed but never checked:
+    the criterion that inspects the written file is refused for being outside the read
+    roots, and the task closes 'not verified' for a reason that has nothing to do with
+    the work.
+    """
+
+    def engine(self, **env: str):
+        from livium.permissions import PermissionEngine
+
+        return PermissionEngine(self.config(**env))
+
+    def test_approval_write_root_is_readable_only_for_verification(self) -> None:
+        restricted = self.home.dir / "restricted"
+        restricted.mkdir(parents=True, exist_ok=True)
+        target = restricted / "release-notes.md"
+        engine = self.engine(LIVIUM_APPROVAL_WRITE_ROOTS=str(restricted))
+
+        self.assertFalse(engine.check_read(target).allowed,
+                         "an approval root is not a read root: the agent cannot browse it")
+        decision = engine.check_verification_read(target)
+        self.assertTrue(decision.allowed, decision.reason)
+        self.assertIn("approval write root", decision.reason)
+
+    def test_paths_outside_every_root_are_refused_for_verification_too(self) -> None:
+        outside = pathlib.Path("/etc/shadow")
+        engine = self.engine(LIVIUM_APPROVAL_WRITE_ROOTS=str(self.home.dir / "restricted"))
+        decision = engine.check_verification_read(outside)
+        self.assertFalse(decision.allowed)
+        self.assertIn("outside the permitted read roots", decision.reason)
+
+    def test_read_roots_still_work_for_verification(self) -> None:
+        inside = self.config().paths.workspace / "notes.md"
+        inside.parent.mkdir(parents=True, exist_ok=True)
+        engine = self.engine()
+        self.assertTrue(engine.check_verification_read(inside).allowed)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

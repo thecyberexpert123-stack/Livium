@@ -74,6 +74,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_under_home(raw: str, home: pathlib.Path) -> pathlib.Path:
+    """Resolve a configured path: absolute as given, relative to the data home."""
+
+    path = pathlib.Path(raw).expanduser()
+    return (path if path.is_absolute() else home / path).resolve()
+
+
 def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = _env(name)
     if raw is None:
@@ -108,6 +115,10 @@ class LimitConfig:
 
     max_steps: int = 12
     max_tool_calls: int = 40
+    #: How many times the router may retry the *same* tool after a failure that could
+    #: plausibly differ on a second attempt. Retries of an identical call are never
+    #: allowed -- see livium.router.
+    max_retries_per_tool: int = 2
     max_seconds: float = 900.0
     max_command_seconds: float = 60.0
     max_tool_output_bytes: int = 30000
@@ -125,6 +136,10 @@ class PathConfig:
     # agent can write here freely; promotion into `livium/promoted` is a
     # separate, human-approved step.
     capability_lab: pathlib.Path
+    #: Where promotion copies a capability so the loader can import it. Configurable
+    #: because an installed package may be read-only, and because a demonstration or
+    #: test needs to promote without writing into the source tree.
+    promoted: pathlib.Path
 
 
 @dataclasses.dataclass(frozen=True)
@@ -135,6 +150,10 @@ class PermissionConfig:
     denied_binaries: tuple[str, ...]
     network_allowlist: tuple[str, ...]
     protected_paths: tuple[pathlib.Path, ...]
+    #: Paths the agent may write only with a human approval recorded in the database.
+    approval_write_roots: tuple[pathlib.Path, ...] = ()
+    #: Binaries that may run only with a human approval recorded in the database.
+    approval_binaries: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -211,6 +230,7 @@ class Config:
 
         limits = LimitConfig(
             max_steps=_env_int("LIVIUM_MAX_STEPS", 12),
+            max_retries_per_tool=_env_int("LIVIUM_MAX_RETRIES_PER_TOOL", 2),
             max_tool_calls=_env_int("LIVIUM_MAX_TOOL_CALLS", 40),
             max_seconds=float(_env_int("LIVIUM_MAX_SECONDS", 900)),
             max_command_seconds=float(_env_int("LIVIUM_MAX_COMMAND_SECONDS", 60)),
@@ -233,6 +253,9 @@ class Config:
             ).expanduser().resolve(),
             prompts=(REPO_ROOT / "livium" / "prompts").resolve(),
             capability_lab=(home / "capability-lab").resolve(),
+            promoted=_resolve_under_home(
+                _env("LIVIUM_PROMOTED_DIR", str(REPO_ROOT / "livium" / "promoted")) or "",
+                home),
         )
 
         # Protected paths: the governance and safety surface. The permission
@@ -277,6 +300,14 @@ class Config:
             ),
             network_allowlist=_env_list("LIVIUM_NETWORK_ALLOWLIST", ()),
             protected_paths=protected,
+            # Consequential-but-legitimate operations. Empty by default: nothing is
+            # approvable until an operator says what is. An approval is a row a human
+            # writes; the model cannot create one (see livium.approvals).
+            approval_write_roots=tuple(
+                pathlib.Path(p).expanduser().resolve()
+                for p in _env_list("LIVIUM_APPROVAL_WRITE_ROOTS", ())
+            ),
+            approval_binaries=_env_list("LIVIUM_APPROVAL_BINARIES", ()),
         )
 
         return cls(
@@ -326,6 +357,7 @@ class Config:
                 "workspace": str(self.paths.workspace),
                 "evidence": str(self.paths.evidence),
                 "capability_lab": str(self.paths.capability_lab),
+                "promoted": str(self.paths.promoted),
             },
             "permissions": {
                 "read_roots": [str(p) for p in self.perms.read_roots],

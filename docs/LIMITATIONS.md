@@ -143,3 +143,35 @@ handling is tested, but the success paths against real providers are unverified 
 Where a test uses a double, it is declared as one: the scripted client is refused
 unless `LIVIUM_ALLOW_TEST_DOUBLE=1` is set, results carry `is_test_double`, and the
 CLI prints a warning. No verification result in this repository is produced by a mock.
+
+## 12. A promotion proved nothing until the tests stopped lying
+
+The capability lab ran a scaffold's tests and reported them passing. The scaffold's
+test file contained no assertions and the module returned an empty `ToolResult` for
+every call, so "tests passed" and "the tool does nothing" were both true at the same
+time. Promotion was therefore reachable from a placeholder -- the lifecycle looked
+enforced and was not.
+
+Promotion now requires evidence that could have failed: at least one test that
+executes the capability and asserts on its output, and an interface that is not the
+scaffold's placeholder. `capability test` refuses the generated stub, and a regression
+test pins it (`tests/test_capabilities.py::PlaceholderTests`). The general lesson is in
+`AGENT-EXPERIENCE.md`: a check that cannot fail is not a check.
+
+## 13. The guardian's own instructions are the agent's, not the model's
+
+`livium/prompts/*.md` are protected by the permission engine (write refused, hash
+baselined) but they are still *text in a prompt*. The enforcement that matters is the
+harness: `TaskRouter` decides the step, `ToolRegistry` authorises each call, and
+`Verification` executes the criteria. If a prompt were replaced, the agent would keep
+refusing what the engine refuses. What a modified instruction file could change is
+judgement — which of two permitted actions is chosen — and that is stated rather than
+smoothed over.
+
+## 14. What mission test H does and does not prove
+
+Test H shows the model's recommendation has no effect on a refusal: the call is denied,
+the denial is journalled with its reason, and the run continues or stops according to
+the router. It does not prove the *permission rules themselves* are correct -- a rule
+that wrongly denies something is still enforced, and the specification asks for
+enforcement, not for omniscience about which rule is right.

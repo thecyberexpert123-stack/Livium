@@ -32,6 +32,7 @@ from typing import Any, Callable
 from .config import Config
 from .execution import Runner
 from .memory import Memory, ProtectedMemoryError
+from .approvals import ApprovalQueue, is_rejected, is_approved
 from .permissions import APPROVAL, DENY, PermissionEngine
 from .store import Store
 
@@ -70,12 +71,50 @@ class ToolContext:
     step: int = 0
     purpose: str = ""
     services: dict[str, Any] = dataclasses.field(default_factory=dict)
+    #: The exact arguments this call is attempting. Set by ``invoke`` so an approval
+    #: request can name the operation precisely and a human decision can match it.
+    arguments: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 def _text(value: str, limit: int = 12_000) -> str:
     if len(value) <= limit:
         return value
     return value[:limit] + f"\n[... truncated, {len(value) - limit} more characters]"
+
+
+#: Compact metadata per built-in tool. This is what the capability catalog shows the
+#: model when a full interface would be wasted context: enough to know the tool exists
+#: and what authority it needs, not the whole schema. ``permissions`` names the checks
+#: the tool layer actually performs, so the catalog cannot promise more than the code
+#: enforces. Built-ins are marked ``validated: builtin`` because they are covered by
+#: the repository's own test suite; a capability tool carries its lifecycle status
+#: instead, which is the honest answer for code that was written recently.
+TOOL_META: dict[str, dict[str, Any]] = {
+    "read_file": {"purpose": "read a text file from the permitted roots",
+                  "permissions": ["read"], "side_effects": False},
+    "list_dir": {"purpose": "list a directory with sizes and types",
+                 "permissions": ["read"], "side_effects": False},
+    "sha256": {"purpose": "hash a file to prove its content did not change",
+               "permissions": ["read"], "side_effects": False},
+    "write_file": {"purpose": "write a file atomically inside the workspace",
+                   "permissions": ["write"], "side_effects": True},
+    "run_command": {"purpose": "run an allow-listed binary in a namespace, no shell",
+                    "permissions": ["command", "network"], "side_effects": True},
+    "memory_search": {"purpose": "ranked full-text retrieval over stored records",
+                      "permissions": [], "side_effects": False},
+    "memory_write": {"purpose": "store a durable fact, decision, failure or lesson",
+                     "permissions": [], "side_effects": True},
+    "memory_update": {"purpose": "correct or supersede an existing record",
+                      "permissions": [], "side_effects": True},
+    "memory_forget": {"purpose": "retire a record without destroying its history",
+                      "permissions": [], "side_effects": True},
+    "request_capability": {"purpose": "propose a capability that does not exist yet",
+                           "permissions": [], "side_effects": True},
+    "finish_task": {"purpose": "declare the task finished so the harness can verify it",
+                    "permissions": [], "side_effects": False},
+    "tool_info": {"purpose": "get the full interface of a tool before calling it",
+                  "permissions": [], "side_effects": False},
+}
 
 
 class ToolRegistry:
@@ -86,12 +125,15 @@ class ToolRegistry:
         store: Store,
         memory: Memory,
         runner: Runner,
+        approvals: ApprovalQueue | None = None,
     ):
         self.config = config
         self.engine = engine
         self.store = store
         self.memory = memory
         self.runner = runner
+        self.approvals = approvals or ApprovalQueue(store)
+        self._catalog: dict[str, dict[str, Any]] = {}
         self._handlers: dict[str, Callable[[dict[str, Any], ToolContext], ToolResult]] = {
             "read_file": self._read_file,
             "list_dir": self._list_dir,
@@ -104,9 +146,11 @@ class ToolRegistry:
             "memory_forget": self._memory_forget,
             "request_capability": self._request_capability,
             "finish_task": self._finish_task,
+            "tool_info": self._tool_info,
         }
         self._external_specs: dict[str, dict[str, Any]] = {}
         self._external_handlers: dict[str, Callable] = {}
+        self._external_meta: dict[str, dict[str, Any]] = {}
 
     # -- schema -----------------------------------------------------------
     def specs(self) -> list[dict[str, Any]]:
@@ -284,6 +328,21 @@ class ToolRegistry:
                 },
             },
             {
+                "name": "tool_info",
+                "description": (
+                    "Get the full interface (arguments, permissions, validation state) of one "
+                    "tool by name before calling it. The catalog in your context lists what "
+                    "exists; this fetches the detail for the one you need."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "The tool's name."},
+                    },
+                    "required": ["name"],
+                },
+            },
+            {
                 "name": "finish_task",
                 "description": (
                     "End the task. The harness then verifies the acceptance criteria for real. "
@@ -304,6 +363,88 @@ class ToolRegistry:
 
     def specs_names(self) -> tuple[str, ...]:
         return tuple(spec["name"] for spec in self.specs())
+
+    def specs_for(self, names: Sequence[str]) -> list[dict[str, Any]]:
+        """Full schemas for exactly ``names``, in the order the router offered them.
+
+        This is the selective half of tool exposure: the model is sent the interfaces
+        for the tools relevant to this step, plus whatever it asked for by name, and a
+        ``specs()``-wide dump is used only by callers that genuinely want everything
+        (the API's tool listing, and tests).
+        """
+
+        wanted = [str(name) for name in names]
+        by_name = {spec["name"]: spec for spec in self.specs()}
+        return [by_name[name] for name in wanted if name in by_name]
+
+    def catalog(self) -> list[dict[str, Any]]:
+        """The compact listing: name, purpose, required authority, validation state.
+
+        Small enough to send every step. It exists so a model can know what is
+        available without every interface being carried in every request, and so the
+        agent can ask for one interface (``tool_info``) when it needs the detail.
+        """
+
+        entries: list[dict[str, Any]] = []
+        for spec in self.specs():
+            name = spec["name"]
+            meta = TOOL_META.get(name)
+            if meta is None:
+                meta = self._external_meta.get(name, {})
+            entries.append({
+                "name": name,
+                "purpose": meta.get("purpose") or spec.get("description", "")[:90],
+                "permissions": list(meta.get("permissions") or []),
+                "side_effects": bool(meta.get("side_effects", False)),
+                "source": meta.get("source", "builtin"),
+                "validation": meta.get("validation", "builtin+tested"),
+            })
+        return entries
+
+    def catalog_section(self) -> list[str]:
+        """Catalog lines for the context's capability section."""
+
+        lines = []
+        for entry in self.catalog():
+            flags = []
+            if entry["permissions"]:
+                flags.append("needs " + "+".join(entry["permissions"]))
+            if entry["side_effects"]:
+                flags.append("writes")
+            suffix = f" [{', '.join(flags)}]" if flags else ""
+            lines.append(f"{entry['name']}: {entry['purpose']}{suffix}")
+        return lines
+
+    def _tool_info(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        wanted = str(args.get("name") or "").strip()
+        if not wanted:
+            return ToolResult(
+                tool="tool_info", ok=False, output="name is required", error="bad_arguments",
+                data={"catalog": self.catalog()},
+            )
+        by_name = {spec["name"]: spec for spec in self.specs()}
+        spec = by_name.get(wanted)
+        if spec is None:
+            known = ", ".join(sorted(by_name))
+            return ToolResult(
+                tool="tool_info", ok=False,
+                output=f"no tool named {wanted!r}. Available: {known}",
+                error="unknown_tool", data={"available": sorted(by_name)},
+            )
+        meta = TOOL_META.get(wanted) or self._external_meta.get(wanted, {})
+        payload = {
+            "name": spec["name"],
+            "description": spec.get("description", ""),
+            "parameters": spec.get("parameters", {}),
+            "permissions": list(meta.get("permissions") or []),
+            "source": meta.get("source", "builtin"),
+            "validation": meta.get("validation", "builtin+tested"),
+            "side_effects": bool(meta.get("side_effects", False)),
+        }
+        return ToolResult(
+            tool="tool_info", ok=True,
+            output=json.dumps(payload, indent=2)[:4000], data=payload,
+        )
 
     def register_external(self, spec: dict[str, Any], handler) -> None:
         """Add a tool supplied by a promoted capability.
@@ -332,6 +473,16 @@ class ToolRegistry:
             "description": str(spec["description"]),
             "parameters": parameters,
         }
+        # Provenance travels with the tool: without this the catalog reports every
+        # capability tool as a built-in, which is a false statement about where the
+        # agent's abilities come from and how far their validation went.
+        self._external_meta[name] = {
+            "purpose": str(spec.get("purpose") or spec["description"])[:120],
+            "permissions": [str(p) for p in (spec.get("permissions") or [])],
+            "side_effects": bool(spec.get("side_effects", False)),
+            "source": str(spec.get("source") or "capability"),
+            "validation": str(spec.get("validation") or "capability:unknown"),
+        }
         self._external_handlers[name] = handler
 
     # -- dispatch ---------------------------------------------------------
@@ -340,6 +491,45 @@ class ToolRegistry:
 
     def invoke(self, name: str, arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolResult:
         ctx = ctx or ToolContext()
+        ctx.arguments = dict(arguments or {})
+        return self._journal_call(ctx, name, self._dispatch(name, arguments, ctx))
+
+    @staticmethod
+    def _arguments_digest(arguments: dict[str, Any]) -> str:
+        """A stable fingerprint of the arguments, so a call can be compared without
+        storing its contents: arguments can contain file bodies and other payloads
+        that do not belong in the journal."""
+
+        raw = json.dumps(arguments, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def _journal_call(self, ctx: ToolContext, name: str,
+                      result: ToolResult) -> ToolResult:
+        """Record what was actually executed, once, whatever the outcome.
+
+        The learning ledger reads reused capabilities and executed tools from here,
+        so this record has to be produced by the dispatcher rather than by whichever
+        caller happens to remember to write it.
+        """
+
+        self.store.append_event(
+            "tool_call",
+            {
+                "tool": result.tool or name,
+                "ok": bool(result.ok),
+                "denied": bool(result.denied),
+                "category": result.category,
+                "error": (result.error or "")[:200],
+                "arguments_digest": self._arguments_digest(ctx.arguments),
+                "purpose": str(ctx.purpose or "")[:200],
+                "step": ctx.step,
+            },
+            task_id=ctx.task_id,
+        )
+        return result
+
+    def _dispatch(self, name: str, arguments: dict[str, Any],
+                  ctx: ToolContext) -> ToolResult:
         handler = self._handlers.get(name)
         if handler is None and name in self._external_handlers:
             # Promoted capabilities get their own error handling: a buggy third-party
@@ -442,13 +632,66 @@ class ToolRegistry:
         if decision.outcome == DENY:
             return self._boundary(ctx, tool, decision.reason, decision.category)
         if decision.outcome == APPROVAL:
-            return self._boundary(
-                ctx, tool,
-                f"{decision.reason}. Unattended runs cannot grant approval; a human must "
-                f"widen the allowlist (LIVIUM_ALLOWED_BINARIES or LIVIUM_EXTRA_WRITE_ROOTS).",
-                "command" if decision.category == "command" else decision.category,
-            )
+            return self._needs_approval(ctx, tool, decision)
         return None
+
+    def _needs_approval(self, ctx: ToolContext, tool: str, decision) -> ToolResult:
+        """The engine wants a human. Either one already said yes, or the run stops here.
+
+        The approval is a row written by a human through the CLI; the model cannot
+        create one, and this method cannot invent one. It only checks whether the exact
+        operation it is about to perform was authorised, and consumes that authorisation
+        so one decision covers one execution.
+        """
+
+        arguments = getattr(ctx, "arguments", None) or {}
+        if is_approved(self.approvals, task_id=ctx.task_id, tool=tool, arguments=arguments):
+            consumed = self.approvals.consume(task_id=ctx.task_id, tool=tool, arguments=arguments)
+            self.store.append_event(
+                "approval_honoured",
+                {"tool": tool, "approval_id": getattr(consumed, "id", None),
+                 "approved_by": getattr(consumed, "decided_by", None)},
+                task_id=ctx.task_id,
+            )
+            return None
+
+        # A standing "no" is not re-requested with identical arguments: nothing has
+        # changed, and asking the same person the same question again is not progress.
+        if is_rejected(self.approvals, task_id=ctx.task_id, tool=tool, arguments=arguments):
+            self.store.append_event(
+                "approval_rejection_honoured", {"tool": tool}, task_id=ctx.task_id,
+            )
+            return ToolResult(
+                tool=tool, ok=False, denied=True, error="approval_rejected",
+                category=decision.category,
+                output=(
+                    f"{decision.reason}. A human rejected exactly this operation, and nothing "
+                    f"about it has changed, so it is not requested again. Change the approach "
+                    f"or the arguments."
+                ),
+                data={"approval_rejected": True, "reason": decision.reason},
+            )
+
+        request = self.approvals.request(
+            task_id=ctx.task_id, tool=tool, arguments=arguments, reason=decision.reason,
+        )
+        self.store.append_event(
+            "boundary_violation",
+            {"tool": tool, "category": decision.category, "reason": decision.reason,
+             "approval_id": request.id, "outcome": "approval_required"},
+            task_id=ctx.task_id,
+        )
+        return ToolResult(
+            tool=tool, ok=False, denied=True, error="approval_required",
+            category=decision.category,
+            output=(
+                f"{decision.reason}. This is not negotiable from inside the agent: a human "
+                f"must approve it with `livium approvals --approve {request.id} --by <name>`, "
+                f"after which a later run of this task may perform exactly this operation once."
+            ),
+            data={"approval_id": request.id, "approval_required": True,
+                  "reason": decision.reason},
+        )
 
     # -- filesystem tools -------------------------------------------------
     def _read_file(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -535,10 +778,14 @@ class ToolRegistry:
                 error="too_large",
             )
 
+        # The write-ahead record states the outcome precisely enough to be checked
+        # afterwards: a digest, not just a length. Recovery compares it against what is
+        # actually on disk, so "did this write land?" is answered by evidence.
+        digest = hashlib.sha256(payload).hexdigest()
         intent_id = self.store.record_intent(
-            "write_file", {"path": str(target), "bytes": len(payload)},
+            "write_file", {"path": str(target), "bytes": len(payload), "sha256": digest},
             task_id=ctx.task_id, target=str(target),
-            expected=f"file exists with sha256 of {len(payload)} bytes",
+            expected=f"{target} exists with sha256 {digest}",
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         temp_fd, temp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".livium-tmp-")

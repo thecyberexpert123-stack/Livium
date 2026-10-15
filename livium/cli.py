@@ -21,6 +21,7 @@ from typing import Any, Sequence
 
 from . import __version__
 from .agent import LiviumAgent
+from .approvals import ApprovalQueue
 from .capabilities import CapabilityError, CapabilityRegistry
 from .config import Config, ConfigError
 from .guardian import GrowthGuardian
@@ -276,7 +277,8 @@ def cmd_capability(args: argparse.Namespace, config: Config) -> int:
     store = Store(config.paths.db)
     engine = PermissionEngine(config)
     guardian = GrowthGuardian(config, engine, store, Memory(store))
-    registry = CapabilityRegistry(store, lab=config.paths.capability_lab)
+    registry = CapabilityRegistry(store, lab=config.paths.capability_lab,
+                                  promoted=config.paths.promoted)
     try:
         action = args.capability_action
         if action == "list":
@@ -296,6 +298,24 @@ def cmd_capability(args: argparse.Namespace, config: Config) -> int:
                 print(f"no capability {args.name!r}", file=sys.stderr)
                 return 2
             _print(capability.as_dict(), args.json)
+            return 0
+        if action == "search":
+            matches = registry.search(
+                " ".join(args.terms), limit=args.limit,
+                include_unvalidated=args.include_unvalidated)
+            if args.json:
+                _print(matches, True)
+            elif not matches:
+                print("no capability matches those terms; that is an answer, not a failure")
+            else:
+                for match in matches:
+                    state = "validated" if match.get("validated") else "not validated"
+                    print(f"{match.get('name')}  [{match.get('status')}, {state}]")
+                    print(f"  {match.get('requirement') or ''}")
+                    if match.get("tools"):
+                        print(f"  tools: {', '.join(match['tools'])}")
+                    print(f"  matched on: {', '.join(match.get('matched_terms') or []) or 'nothing'}")
+                    print()
             return 0
         if action == "propose":
             capability = registry.propose(
@@ -350,6 +370,64 @@ def cmd_capability(args: argparse.Namespace, config: Config) -> int:
         store.close()
 
 
+def cmd_approvals(args: argparse.Namespace, config: Config) -> int:
+    """The only place an approval decision can be made.
+
+    Deliberately absent from the HTTP API and from the tool registry: an operation the
+    permission engine held back must be released by a person at a terminal, never by a
+    request the agent itself can issue.
+    """
+
+    store = Store(config.paths.db)
+    queue = ApprovalQueue(store)
+    try:
+        if args.approve is not None or args.reject is not None:
+            if not (args.by or "").strip():
+                print("refusing to record an approval without --by <your name>: an anonymous "
+                      "approval is not a human decision", file=sys.stderr)
+                return 2
+            request_id = args.approve if args.approve is not None else args.reject
+            approve = args.approve is not None
+            try:
+                record = queue.decide(request_id, approved=approve, by=args.by,
+                                      note=args.note)
+            except KeyError:
+                print(f"no approval request {request_id}", file=sys.stderr)
+                return 2
+            except ValueError as exc:
+                print(f"cannot decide request {request_id}: {exc}", file=sys.stderr)
+                return 2
+            state = "approved" if record.status == "approved" else "rejected"
+            print(f"request {record.id} ({record.tool}) {state} by {args.by}")
+            if approve:
+                print("the operation may now run once; any second attempt needs a new request")
+            return 0
+
+        rows = queue.pending() if args.pending else queue.recent(limit=args.recent or 20)
+        if args.json:
+            _print([r.as_dict() for r in rows], True)
+            return 0
+        if not rows:
+            print("no approval requests are waiting" if args.pending
+                  else "no approval requests have been recorded")
+            return 0
+        for record in rows:
+            print(record.render())
+            print()
+        waiting = [r for r in rows if r.status == "pending"]
+        if waiting:
+            print(f"{len(waiting)} request(s) need a decision, for example:")
+            print(f"  livium approvals --approve {waiting[0].id} --by \"<your name>\"")
+            if waiting[0].task_id:
+                print("An approval covers one execution of one operation for the task that "
+                      "asked for it. Continue that task with:")
+                print(f"  livium run \"<same objective>\" --task-id {waiting[0].task_id} "
+                      f"--resume")
+        return 0
+    finally:
+        store.close()
+
+
 def cmd_guardian(args: argparse.Namespace, config: Config) -> int:
     store = Store(config.paths.db)
     engine = PermissionEngine(config)
@@ -377,7 +455,8 @@ def cmd_guardian(args: argparse.Namespace, config: Config) -> int:
             _print(payload, args.json)
             return 0
         if action == "baseline":
-            result = guardian.record_baseline(approved_by=args.approved_by)
+            result = guardian.record_baseline(approved_by=args.approved_by,
+                                              force=bool(getattr(args, "force", False)))
             _print(result, args.json)
             return 0
         if action == "propose-change":
@@ -530,6 +609,12 @@ def build_parser() -> argparse.ArgumentParser:
     capability = sub.add_parser("capability", help="capability lifecycle")
     capability_sub = capability.add_subparsers(dest="capability_action", required=True)
     capability_sub.add_parser("list")
+    cap_search = capability_sub.add_parser("search",
+                                           help="find capabilities by requirement keywords")
+    cap_search.add_argument("terms", nargs="+")
+    cap_search.add_argument("--include-unvalidated", action="store_true",
+                            help="also show proposed/experimental candidates")
+    cap_search.add_argument("--limit", type=int, default=5)
     show = capability_sub.add_parser("show")
     show.add_argument("name")
     propose = capability_sub.add_parser("propose")
@@ -553,11 +638,30 @@ def build_parser() -> argparse.ArgumentParser:
     reject.add_argument("name")
     reject.add_argument("--reason", required=True)
 
+    approvals = sub.add_parser(
+        "approvals",
+        help="human decisions on operations the permission engine held for approval")
+    approvals.add_argument("--pending", action="store_true",
+                           help="show only requests still waiting for a decision")
+    approvals.add_argument("--recent", type=int, default=0,
+                           help="show this many decided requests as well")
+    approvals.add_argument("--approve", type=int, metavar="ID",
+                           help="approve request ID (one execution, then it is consumed)")
+    approvals.add_argument("--reject", type=int, metavar="ID",
+                           help="reject request ID")
+    approvals.add_argument("--by", metavar="NAME",
+                           help="who is deciding; required for --approve/--reject")
+    approvals.add_argument("--note", default="", help="short reason recorded with the decision")
+    approvals.add_argument("--json", action="store_true")
+
     guardian = sub.add_parser("guardian", help="integrity and consequence controls")
     guardian_sub = guardian.add_subparsers(dest="guardian_action", required=True)
     guardian_sub.add_parser("status")
     baseline = guardian_sub.add_parser("baseline")
     baseline.add_argument("--approved-by", required=True)
+    baseline.add_argument("--force", action="store_true",
+                          help="replace an existing baseline; the digests being replaced "
+                               "are recorded in the journal")
     propose_change = guardian_sub.add_parser("propose-change")
     propose_change.add_argument("--target-file", required=True)
     propose_change.add_argument("--observed-failure", required=True)
@@ -593,7 +697,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     handlers = {
         "doctor": cmd_doctor, "run": cmd_run, "resume": cmd_resume, "status": cmd_status,
         "events": cmd_events, "memory": cmd_memory, "capability": cmd_capability,
-        "guardian": cmd_guardian, "selftest": cmd_selftest, "report": cmd_report,
+        "approvals": cmd_approvals, "guardian": cmd_guardian, "selftest": cmd_selftest, "report": cmd_report,
         "serve": cmd_serve,
     }
     try:

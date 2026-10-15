@@ -113,7 +113,11 @@ class SchemaTests(LiviumTestCase):
         first.close()
         second = Store(config.paths.db)
         self.addCleanup(second.close)
-        self.assertEqual(second.get_meta("schema_version"), 1)  # stored as JSON, read back as int
+        # Track the constant: the point of the test is that the version is stored and
+        # read back as an int, not that it never changes.
+        from livium.store import SCHEMA_VERSION
+
+        self.assertEqual(second.get_meta("schema_version"), int(SCHEMA_VERSION))
 
     def test_stats_reports_real_counts(self) -> None:
         store = self.store()

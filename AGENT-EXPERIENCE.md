@@ -141,6 +141,71 @@ completion does not close a task.
 These are the outcomes the specification asks for, and they are the ones worth
 protecting when someone later finds them inconvenient.
 
+## 13. A test that cannot run is worse than a test that fails
+
+**What happened.** Rewriting `tests/test_mission.py` clobbered one class body and
+duplicated several others. `unittest` collected 16 of the 17 intended tests and
+reported OK: the missing test simply did not exist any more, and the duplicates were
+invisible because the later definition silently won.
+
+**What changed.** `tests/test_hygiene.py` now reads the test sources as source and
+asserts three things: no module defines the same class twice, every `TestCase`
+subclass either has test methods or is inherited by one, and unittest discovery
+collects exactly the number of test methods the sources contain. The mission's own
+F test was found this way, after it had been silently absent from a passing suite.
+
+## 14. A row with no owner is not evidence
+
+**What happened.** Token usage from the model was recorded, but the `model_reply`
+journal event was written without a task id, so the learning ledger could never
+attribute a single call to the task that made it. The first ledger row in a real run
+reported `prompt_tokens_actual: null` for a transport that had reported 900 tokens
+per call.
+
+**What changed.** The reply event carries the task id it belongs to, and the ledger
+reads usage back from those rows. The fix was found by running a task end to end and
+reading the row, not by reading the code.
+
+## 15. Provenance is a claim the code has to keep true
+
+**What happened.** The tool catalog reported every capability tool with
+`source: "builtin"` and `validation: "builtin+tested"`. The data was never stored --
+`register_external` kept the schema it needed for the model and dropped everything
+else -- and the reader defaulted to the words that sound reassuring.
+
+**What changed.** Provenance travels with the tool (`source: capability:word_count`,
+`validation: capability:active`, and the permissions the module declares), and a test
+fails if a capability-provided tool is ever described as a built-in again. A default
+that flatters the system is a lie waiting for a reader.
+
+## 16. A procedure is not an outcome
+
+**What happened.** The mission's section 12 asks for demonstrations of a limited
+retrieval, a discovered capability, a failure that changes the next action, a resume,
+a reuse, and token accounting. An early version of the demonstration runner printed
+those steps and reported `verified` for each -- including M2, where the capability
+had been found but never executed, because the later session had been given no task
+script at all. Five of six demonstrations "passed" while one of them proved nothing.
+
+**What changed.** Every demonstration now asserts on observed state: the tool-call
+rows in the journal, the ledger columns, the approval row status, the verification
+outcome. A demonstration that cannot show its evidence records `not verified` and the
+runner exits non-zero. The distinction between "I ran the procedure" and "the
+procedure produced the result" has to be enforced by the code that reports it.
+
+## 17. The boundary that is easier to enforce is the one to enforce
+
+**What happened.** A rule refused every command argument containing shell
+metacharacters. It looked like defence in depth and was in fact security theatre: no
+shell is ever spawned, the interpreter is allowlisted by name, and the rule only
+blocked legitimate Python one-liners and SQL. Meanwhile the real risk -- `sh -c` --
+was a name that could simply be denied.
+
+**What changed.** The rule is now: allowlisted program, no shell interpreters, no
+control characters, arguments are passed literally. The surviving tests assert the
+literal-passing behaviour rather than the old blanket refusal. A rule that cannot
+point at the mechanism it protects is a rule that will be worked around.
+
 ---
 
 ## Rules derived from these lessons
@@ -160,3 +225,8 @@ form of the above, and `AGENTS.md` carries them into the workspace:
 7. When the environment blocks a real verification, say so and name what would
    unblock it. Never substitute a demonstration of orchestration for a demonstration
    of the capability.
+8. Assert on outcomes that only a working system can produce, and make the report of
+   a demonstration fail when the evidence is missing.
+9. Prefer the boundary that names its mechanism over the boundary that sounds strict.
+10. Store provenance with the thing it describes; never let a reader default to a
+    flattering label.

@@ -34,6 +34,11 @@ livium/
   tools.py         the tool registry: specs, argument validation, dispatch, side effects
   verification.py  executable acceptance criteria + the honest summary of what passed
   guardian.py      integrity baselines, violation rules, promotion gate, frozen mode
+  router.py        the deterministic step decision: execute / select capability / retry /
+                   investigate / retrieve / verify / persist / request authorization
+  ledger.py        one measured row per task: what was used, retried, verified, and
+                   whether recorded experience changed the approach
+  approvals.py     operations held for a human decision, one execution per decision
   context.py       context assembly, prioritisation, budgets, omission records
   recovery.py      interrupted-work inspection and resume safety
   capabilities.py  proposed → experimental → validated → active → maintained → deprecated
@@ -46,8 +51,8 @@ livium/
 ```
 
 Dependency direction is one-way: `agent` → everything; `tools` → permissions,
-execution, memory, capabilities; `context` → memory, capabilities, guardian;
-`store` → nothing. Nothing imports `agent`.
+execution, memory, capabilities; `router` → nothing but its own rules; `context` →
+memory, capabilities, guardian; `store` → nothing. Nothing imports `agent`.
 
 ## The operational loop
 
@@ -76,6 +81,71 @@ partial with the remaining criteria named.
 **Write-ahead intents.** Before a side effect, the store records an intent
 (`store.record_intent`). After it, the intent is confirmed. An intent with no
 confirmation is precisely what recovery examines.
+
+### The step is decided, not improvised
+
+`router.TaskRouter.route()` takes the observable state of the run (step number,
+remaining budgets, the last failures with their classification, retry counts, whether
+anything is unresolved, whether the model already asked to finish, whether the
+guardian is frozen) and returns exactly one `RouteDecision`. The rule order is the
+safety property:
+
+```
+frozen → unresolved side effect → finish requested → denied → failed → repeated →
+no progress → genuine gap → execute
+```
+
+A frozen guardian stops the run before anything else is considered. An unresolved
+side effect is established before a task can be closed, whatever the model claims.
+Only after those come the ordinary cases. The model recommends an action; the router
+decides whether that recommendation can be acted on, and the decision is journalled
+(`route_decision`) with the reason and the evidence behind it.
+
+**Selective exposure.** `select_tools()` chooses the interfaces for the step from the
+objective, the tools the run has already used, and the registry — never the whole
+catalogue. The recorded mission run sent 3–6 of 13 interfaces per step. The compact
+catalogue in the context makes every *other* interface discoverable through
+`tool_info`, so selection narrows attention without hiding capability.
+
+**Retries are bounded and classified first.** `classify_failure()` separates a
+permission refusal, a bad argument, a missing binary, a command failure and an
+unknown tool. Only `transient` and `environment` failures are retried
+(`LIVIUM_MAX_RETRIES_PER_TOOL`, default 2); everything else changes approach. A
+failed action never becomes a capability proposal by itself — a gap has to be
+classified as one first, and the reuse ladder runs before the model may treat it as
+real.
+
+### The learning ledger
+
+Every task writes one row (`ledger.py`): category, the capabilities selected, the
+memory ids that reached the prompt, model calls and failures, tools executed, retries,
+denials, approvals requested, failures, verification state, status, duration, and
+three questions the specification asks directly — was an existing capability reused,
+was new development needed, and did recorded experience change the approach. The last
+one is not a feeling: it is computed from the injected records against the tools that
+actually ran, and the evidence for it is stored in the row.
+
+Token accounting keeps actual and estimated in different columns. `prompt_tokens_actual`
+is `NULL` unless a provider reported usage; the estimate from the context builder lives
+in `tokens_estimated`. Nothing is written as zero to look complete.
+
+### Approvals
+
+Some operations are neither allowed nor forbidden: writing under
+`LIVIUM_APPROVAL_WRITE_ROOTS` or running a program in `LIVIUM_APPROVAL_BINARIES`
+yields `approval_required`, which records a request, journals a boundary event, and
+stops the run as `awaiting_approval`. The decision is made only through
+`livium approvals --approve <id> --by "<name>"` — there is no HTTP route and no tool
+that can decide one, and a test asserts both. A decision covers exactly one execution
+of one operation for the task that asked; the row is consumed by that call, and a
+second identical attempt needs a second decision. A rejected operation is not
+re-asked with the same arguments.
+
+Verification may read inside an approval write root (`check_verification_read`) even
+though ordinary reads cannot: without it, an operation a human authorised could be
+performed but never checked, and every such task would end `not verified` for a reason
+unrelated to the work. The relaxation is one line, confined to paths a human put in the
+configuration, and it returns its reason like every other decision.
 
 ## Data model (SQLite, WAL)
 

@@ -297,8 +297,37 @@ class Recovery:
 
         digest = hashlib.sha256(data).hexdigest()
         expected_bytes = args.get("bytes")
+        expected_digest = args.get("sha256")
         evidence = (f"sha256={digest} size={len(data)} "
                     f"mtime={target.stat().st_mtime_ns} path={target}")
+        if isinstance(expected_digest, str) and expected_digest:
+            if digest == expected_digest:
+                self.store.resolve_intent(
+                    row["id"], "done",
+                    {"determination": CONFIRMED_COMPLETE, "sha256": digest,
+                     "bytes": len(data)},
+                )
+                return Finding(
+                    intent_id=row["id"], tool=row["tool"],
+                    determination=CONFIRMED_COMPLETE,
+                    detail=(
+                        f"{target} matches the intended content exactly (sha256 {digest[:16]}…), "
+                        "so the write completed even though the state record was not updated; "
+                        "do not repeat it"
+                    ),
+                    evidence=evidence,
+                ), None
+            return Finding(
+                intent_id=row["id"], tool=row["tool"], determination=CONFLICTING,
+                detail=(
+                    f"{target} exists but its content differs from what the interrupted write "
+                    f"intended (on disk {digest[:16]}…, intended {expected_digest[:16]}…): it "
+                    "was written by something else, or the write was interrupted before the "
+                    "atomic replace"
+                ),
+                evidence=evidence,
+            ), (f"{target} does not match the intended digest; its content is untrusted until "
+                "a human inspects it")
         if isinstance(expected_bytes, int) and len(data) == expected_bytes:
             self.store.resolve_intent(
                 row["id"], "done",

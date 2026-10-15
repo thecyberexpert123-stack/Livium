@@ -46,7 +46,7 @@ class BaselineTests(GuardianFixture):
         self.assertFalse(self.guardian.frozen)
 
     def test_baseline_records_real_digests(self) -> None:
-        result = self.guardian.record_baseline(approved_by="Test Human")
+        result = self.guardian.record_baseline(approved_by="Test Human", force=True)
         self.assertEqual(result["baseline_files"], len(self.guardian.protected_files()))
         report = self.guardian.integrity()
         self.assertTrue(report.ok, report.detail)
@@ -54,7 +54,7 @@ class BaselineTests(GuardianFixture):
         self.assertTrue(self.store.events(event_type="guardian_rebaselined"))
 
     def test_the_agent_cannot_rebaseline(self) -> None:
-        for identity in ("agent", "Livium", "self", "auto", ""):
+        for identity in ("agent", "Livium", "self", "auto", "", "Anonymous", "unknown", "-"):
             with self.subTest(approved_by=identity):
                 with self.assertRaises(PermissionError):
                     self.guardian.record_baseline(approved_by=identity)
@@ -76,7 +76,7 @@ class TamperDetectionTests(LiviumTestCase):
         self.guardian = GrowthGuardian(self.cfg, self.engine, self.store, self.memory)
 
     def test_modification_is_detected_and_freezes_the_run(self) -> None:
-        self.guardian.record_baseline(approved_by="Test Human")
+        self.guardian.record_baseline(approved_by="Test Human", force=True)
         self.assertTrue(self.guardian.integrity().ok)
 
         self.victim.write_text("RULE = 'weakened'\n", encoding="utf-8")
@@ -103,7 +103,7 @@ class TamperDetectionTests(LiviumTestCase):
         self.assertIn("no recorded baseline", gate["detail"])
 
     def test_promotion_gate_blocks_after_a_boundary_violation(self) -> None:
-        self.guardian.record_baseline(approved_by="Test Human")
+        self.guardian.record_baseline(approved_by="Test Human", force=True)
         self.guardian.watch(task_id="t-x", trigger="write_file")  # clean
         self.store.append_event(
             "boundary_violation",
@@ -115,7 +115,7 @@ class TamperDetectionTests(LiviumTestCase):
         self.assertFalse(gate["ok"])
 
     def test_frozen_state_cannot_be_cleared_by_the_agent(self) -> None:
-        self.guardian.record_baseline(approved_by="Test Human")
+        self.guardian.record_baseline(approved_by="Test Human", force=True)
         self.victim.write_text("RULE = 'weakened'\n", encoding="utf-8")
         self.guardian.watch(task_id="t", trigger="run_command")
         self.assertTrue(self.guardian.frozen)
@@ -140,7 +140,7 @@ class ConsequenceTests(GuardianFixture):
         self.assertIn("must not be retried", consequences[0].response)
 
     def test_clean_task_has_no_enforced_consequences(self) -> None:
-        self.guardian.record_baseline(approved_by="Test Human")
+        self.guardian.record_baseline(approved_by="Test Human", force=True)
         consequences = self.guardian.consequences("t-clean")
         self.assertFalse([c for c in consequences if c.enforced])
 

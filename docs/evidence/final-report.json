@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-10-15T07:19:45+0000",
+  "generated_at": "2026-10-15T08:21:42+0000",
   "repo": "/home/user/Livium",
-  "home": "/tmp/live",
+  "home": "/tmp/livium-release",
   "provider": {
     "label": "openai_compatible:gpt-4o-mini",
     "probe": {
@@ -22,7 +22,8 @@
       "body": [
         "A working agent runtime in the Python standard library: task loop, tool layer, permission boundary, persistent memory, context management, durable task state, recovery, verification, capability lifecycle, growth guardian, HTTP API and viewer.",
         "1 capability record(s) exist; 1 are active: memory_recent.",
-        "12 tools are callable right now."
+        "13 tools are callable right now.",
+        "Task-directed flow runs inside the existing loop: a deterministic router decides each step (livium/router.py), the context manager carries a compact tool catalog instead of every interface (livium/context.py), and one learning-ledger row per task records what was measured (livium/ledger.py)."
       ],
       "evidence": {
         "tools": [
@@ -36,6 +37,7 @@
           "memory_update",
           "memory_forget",
           "request_capability",
+          "tool_info",
           "finish_task",
           "memory_recent"
         ],
@@ -64,25 +66,31 @@
       "number": 3,
       "title": "What is verified, and how",
       "body": [
-        "211 test methods across 14 modules; each asserts observed behaviour against real storage and real subprocesses.",
-        "Last recorded full-suite run: 211 tests, exit code 0 (1 min old).",
-        "Journal: 99 events, 0 observed boundary violation(s), 0 refused git operation(s), 29 real provider probe(s).",
+        "289 test methods across 19 modules; each asserts observed behaviour against real storage and real subprocesses.",
+        "Last recorded full-suite run: 289 tests, exit code 0 (0 min old).",
+        "Journal: 118 events, 0 observed boundary violation(s), 0 refused git operation(s), 6 real provider probe(s).",
+        "Mission acceptance tests: A retrieval, B budgeting, C capability discovery, D feedback recovery, E cross-process reuse, F genuine growth, G token accounting, H permission enforcement \u2014 test_approval 17, test_hygiene 3, test_ledger 13, test_mission 18, test_router 24 test(s), all passing in the recorded run.",
         "Configured boundary: 20 allowed binaries, 52 denied, 0 allowed network host(s)."
       ],
       "evidence": {
         "tests": {
-          "methods": 211,
+          "methods": 289,
           "files": {
             "test_agent": 17,
+            "test_approval": 17,
             "test_capabilities": 18,
             "test_config": 4,
             "test_context": 12,
             "test_execution": 20,
             "test_guardian": 14,
+            "test_hygiene": 3,
+            "test_ledger": 13,
             "test_memory": 17,
+            "test_mission": 18,
             "test_models": 15,
-            "test_permissions": 20,
+            "test_permissions": 23,
             "test_recovery": 9,
+            "test_router": 24,
             "test_server": 6,
             "test_store": 7,
             "test_tools": 34,
@@ -91,43 +99,57 @@
           "source": "unittest discovery"
         },
         "suite": {
-          "at": "2026-10-15T07:18:28+0000",
+          "at": "2026-10-15T08:21:42+0000",
           "command": "/usr/bin/python3 -m unittest discover -s /home/user/Livium/tests -t /home/user/Livium/tests -v",
-          "tests": 211,
+          "tests": 289,
           "failures": 0,
           "errors": 0,
           "exit_code": 0,
           "result": "OK"
         },
-        "suite_age": "1 min old",
+        "suite_age": "0 min old",
         "stats": {
-          "memory": 12,
-          "event": 99,
-          "task": 2,
-          "task_step": 6,
-          "intent": 0,
+          "memory": 40,
+          "event": 118,
+          "task": 4,
+          "task_step": 9,
+          "intent": 2,
           "capability": 1,
-          "context_report": 6,
-          "verification": 5
+          "context_report": 8,
+          "verification": 3
         },
         "event_types": {
-          "provider_probe": 29,
-          "session_start": 19,
-          "memory_write": 12,
-          "guardian_integrity_warning": 8,
-          "model_reply": 6,
-          "memory_retrieved": 6,
+          "memory_write": 40,
+          "memory_retrieved": 12,
+          "tool_call": 9,
+          "route_decision": 9,
+          "model_reply": 7,
+          "session_start": 6,
+          "provider_probe": 6,
+          "task_verified": 3,
+          "task_started": 3,
+          "task_run_complete": 3,
           "guardian_rebaselined": 3,
-          "capability_tool_used": 3,
-          "task_verified": 2,
-          "task_started": 2,
-          "task_run_complete": 2,
+          "capability_tested": 3,
           "task_finished": 2,
+          "capability_tool_used": 2,
+          "tool_write": 1,
+          "route_action": 1,
+          "retrieval_widened": 1,
+          "recovery_finding": 1,
           "memory_search": 1,
-          "capability_tested": 1,
+          "guardian_integrity_warning": 1,
+          "capability_test_refused": 1,
           "capability_scaffolded": 1,
           "capability_proposed": 1,
           "capability_promoted": 1
+        },
+        "mission_tests": {
+          "test_approval": 17,
+          "test_hygiene": 3,
+          "test_ledger": 13,
+          "test_mission": 18,
+          "test_router": 24
         }
       }
     },
@@ -142,7 +164,8 @@
         "C \u2014 context management: the relevant record is included, the irrelevant noise is excluded, and the budget and omissions are recorded in `context_report`.",
         "D \u2014 recovery: an interrupted write is confirmed from the real file (size, sha256) rather than assumed, and the report says which facts remain unknown.",
         "E \u2014 genuine capability growth: the gap was measured (memory_search returns nothing for a recency question while records exist), then proposed, implemented, tested, promoted by a named human, and used by a fresh agent.",
-        "F \u2014 controlled rejection: a deliberately broken change fails its tests, promotion is refused, and the repaired change passes."
+        "F \u2014 controlled rejection: a deliberately broken change fails its tests, promotion is refused, and the repaired change passes.",
+        "Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified (1 min old)"
       ],
       "evidence": {
         "demonstrations": [
@@ -175,31 +198,379 @@
             "outcome": "verified"
           }
         ],
-        "evidence_age": "1 min old"
+        "evidence_age": "1 min old",
+        "mission_demonstrations": [
+          {
+            "demonstration": "M1 selective retrieval",
+            "outcome": "verified",
+            "detail": "the store held 37 memory records; 2 reached the prompt and they are exactly the ones with the right terms",
+            "evidence": {
+              "records_in_store": 37,
+              "records_injected": [
+                34,
+                35
+              ],
+              "relevant_ids": [
+                34,
+                35
+              ],
+              "all_injected_are_relevant": true,
+              "prompt_chars": 10181,
+              "tokens_estimated": 2910,
+              "included_sections": {
+                "instructions": 4,
+                "objective": 2,
+                "execution_state": 1,
+                "memory": 3,
+                "capabilities": 2,
+                "background": 2
+              },
+              "tool_interfaces_exposed": [
+                "read_file",
+                "list_dir",
+                "sha256",
+                "write_file",
+                "finish_task",
+                "request_capability",
+                "tool_info"
+              ],
+              "tools_available": 12,
+              "route": "execute",
+              "model_replies": "scripted test double (stated in every reply record)"
+            },
+            "at": "2026-10-15T08:21:07+0000"
+          },
+          {
+            "demonstration": "M2 capability discovery",
+            "outcome": "verified",
+            "detail": "the capability was found by requirement words, its declared interface was loaded, and it ran 1 time(s) in a later session",
+            "evidence": {
+              "lifecycle": {
+                "status": "active",
+                "tools": [
+                  "word_count"
+                ],
+                "test_exit_code": 0,
+                "test_duration_ms": 115,
+                "network_isolated": null
+              },
+              "search_matches": [
+                {
+                  "name": "word_count",
+                  "status": "active",
+                  "validated": true,
+                  "matched_terms": [
+                    "count",
+                    "file",
+                    "the",
+                    "words"
+                  ]
+                }
+              ],
+              "interface_tool_schema": [
+                {
+                  "name": "word_count",
+                  "description": "Count words in a workspace file.",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ]
+                  },
+                  "side_effects": false
+                }
+              ],
+              "interface_limitations": "ASCII whitespace only; no per-language tokenisation.",
+              "catalog_entry": {
+                "name": "word_count",
+                "purpose": "Count words in a workspace file.",
+                "permissions": [
+                  "read"
+                ],
+                "side_effects": false,
+                "source": "capability:word_count",
+                "validation": "capability:active"
+              },
+              "capability_tool_calls": [
+                {
+                  "arguments_digest": "9b83205689173614",
+                  "category": "",
+                  "denied": false,
+                  "error": "",
+                  "ok": true,
+                  "purpose": "the discovered capability",
+                  "step": 2,
+                  "tool": "word_count"
+                }
+              ],
+              "task_status": "complete",
+              "verification": "verified",
+              "route_decisions": [
+                [
+                  1,
+                  "execute"
+                ],
+                [
+                  2,
+                  "execute"
+                ],
+                [
+                  3,
+                  "execute"
+                ],
+                [
+                  4,
+                  "verify"
+                ]
+              ]
+            },
+            "at": "2026-10-15T08:21:07+0000"
+          },
+          {
+            "demonstration": "M3 failure changes the next action",
+            "outcome": "verified",
+            "detail": "the write was refused as requiring approval, the run stopped instead of retrying, and one human decision released exactly one execution",
+            "evidence": {
+              "refusal": {
+                "status": "awaiting_approval",
+                "denials": 1,
+                "file_exists": false,
+                "approvals_requested": 1,
+                "route_decisions": [
+                  [
+                    1,
+                    "execute"
+                  ],
+                  [
+                    2,
+                    "request_authorization"
+                  ]
+                ],
+                "pending": [
+                  {
+                    "id": 1,
+                    "task_id": "m3-approval",
+                    "tool": "write_file",
+                    "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-mission/restricted/release.md\",\"purpose\":\"the release file\"}",
+                    "reason": "write needs approval: /tmp/livium-mission/restricted/release.md is inside an approval root (/tmp/livium-mission/restricted). A human decides, not the agent; see `livium approvals`.",
+                    "status": "pending",
+                    "created_at": "2026-10-15T08:21:07+00:00",
+                    "decided_at": null,
+                    "decided_by": null,
+                    "note": null
+                  }
+                ]
+              },
+              "human_decision": {
+                "decided": true,
+                "id": 1,
+                "status": "approved",
+                "by": "Aditya (human)",
+                "recorded": true,
+                "after_approval": {
+                  "status": "partial",
+                  "denials": 0,
+                  "file_exists": true,
+                  "route_decisions": [
+                    [
+                      1,
+                      "execute"
+                    ],
+                    [
+                      2,
+                      "execute"
+                    ],
+                    [
+                      3,
+                      "retrieve_context"
+                    ]
+                  ]
+                },
+                "second_attempt_same_task": {
+                  "status": "awaiting_approval",
+                  "denials": 1,
+                  "approvals_requested": 1
+                },
+                "approval_rows": [
+                  {
+                    "id": 2,
+                    "status": "pending",
+                    "decided_by": null
+                  },
+                  {
+                    "id": 1,
+                    "status": "consumed",
+                    "decided_by": "Aditya (human)"
+                  }
+                ]
+              }
+            },
+            "at": "2026-10-15T08:21:08+0000"
+          },
+          {
+            "demonstration": "M4 resume after interruption",
+            "outcome": "verified",
+            "detail": "a killed process left one unconfirmed side effect; the resumed run established its real outcome from the filesystem before continuing",
+            "evidence": {
+              "child_output": "intent 3 recorded and the file landed; killing the process before the intent could be confirmed",
+              "child_exit": "killed by signal 9",
+              "pending_intents_before_resume": 1,
+              "inspection_next_action": "Every interrupted operation has been accounted for from evidence; the task can continue from: its objective",
+              "inspection_findings": [
+                {
+                  "intent_id": 3,
+                  "tool": "write_file",
+                  "determination": "confirmed_complete",
+                  "detail": "/tmp/livium-mission/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
+                  "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052468594515156 path=/tmp/livium-mission/workspace/interrupted.md"
+                }
+              ],
+              "intent_rows_after_resume": [
+                {
+                  "tool": "write_file",
+                  "status": "done"
+                }
+              ],
+              "resumed_task_status": "partial",
+              "resumed_verification": "verified",
+              "route_decisions": [
+                [
+                  1,
+                  "execute"
+                ],
+                [
+                  2,
+                  "retrieve_context"
+                ]
+              ]
+            },
+            "at": "2026-10-15T08:21:08+0000"
+          },
+          {
+            "demonstration": "M5 experience reuse across processes",
+            "outcome": "verified",
+            "detail": "a record written by one process was retrieved by another and the tool it named was the tool that ran; the ledger stores the link, not an impression",
+            "evidence": {
+              "written_by_process_1": {
+                "memory_id": 49,
+                "action": "created"
+              },
+              "process_2": {
+                "status": "complete",
+                "verification": "verified",
+                "capability_reused": true,
+                "new_development": false,
+                "experience_influenced": true,
+                "memory_ids": [
+                  49,
+                  39,
+                  38
+                ],
+                "experience_evidence": {
+                  "reuse": [
+                    {
+                      "memory_id": 49,
+                      "kind": "capability",
+                      "key": "word_count",
+                      "tools": [
+                        "word_count"
+                      ],
+                      "why": "the record named a tool that this run then executed"
+                    }
+                  ],
+                  "avoided_repetition": []
+                },
+                "tools_executed": [
+                  "write_file",
+                  "word_count",
+                  "finish_task",
+                  "write_file",
+                  "write_file",
+                  "write_file",
+                  "write_file",
+                  "word_count",
+                  "finish_task"
+                ],
+                "route_decisions": [
+                  [
+                    1,
+                    "execute"
+                  ],
+                  [
+                    2,
+                    "execute"
+                  ],
+                  [
+                    3,
+                    "execute"
+                  ],
+                  [
+                    4,
+                    "verify"
+                  ]
+                ]
+              }
+            },
+            "at": "2026-10-15T08:21:09+0000"
+          },
+          {
+            "demonstration": "M6 token accounting",
+            "outcome": "verified",
+            "detail": "a reporting transport produced actual counts; a silent one produced nulls and a labelled estimate, with no number invented for the missing measurement",
+            "evidence": {
+              "rows": {
+                "reported": {
+                  "model_calls": 2,
+                  "prompt_tokens_actual": 2900,
+                  "completion_tokens_actual": 180,
+                  "usage_reported_calls": 2,
+                  "tokens_estimated": 10254,
+                  "task_status": "complete"
+                },
+                "unreported": {
+                  "model_calls": 2,
+                  "prompt_tokens_actual": null,
+                  "completion_tokens_actual": null,
+                  "usage_reported_calls": 0,
+                  "tokens_estimated": 10501,
+                  "task_status": "complete"
+                }
+              },
+              "model": "usage-reporting test double (no real provider is reachable here)"
+            },
+            "at": "2026-10-15T08:21:09+0000"
+          }
+        ],
+        "mission_evidence_age": "1 min old"
       }
     },
     {
       "number": 5,
       "title": "Persistent memory",
       "body": [
-        "12 record(s) live in SQLite; kinds: {'decision': 1, 'experience': 3, 'failure': 3, 'foundational': 3, 'task': 2}; verification states: {'executed': 2, 'tested': 4, 'unverified': 2, 'verified': 4}.",
+        "40 record(s) live in SQLite; kinds: {'decision': 3, 'experience': 29, 'failure': 2, 'foundational': 3, 'task': 3}; verification states: {'claimed': 2, 'tested': 2, 'unverified': 26, 'verified': 10}.",
         "Retrieval is ranked full-text search over real rows; every record carries confidence, verification state, evidence, source and timestamps.",
         "Instructions and their prior versions are preserved in `memory_history`; forgetting retires a record instead of deleting it, so history survives.",
         "Demonstration B is the durability evidence: it crosses a real process boundary."
       ],
       "evidence": {
         "memory_by_kind": {
-          "decision": 1,
-          "experience": 3,
-          "failure": 3,
+          "decision": 3,
+          "experience": 29,
+          "failure": 2,
           "foundational": 3,
-          "task": 2
+          "task": 3
         },
         "memory_by_verification": {
-          "executed": 2,
-          "tested": 4,
-          "unverified": 2,
-          "verified": 4
+          "claimed": 2,
+          "tested": 2,
+          "unverified": 26,
+          "verified": 10
         }
       }
     },
@@ -209,13 +580,13 @@
       "body": [
         "Context is assembled per step from instructions, objective, criteria, relevant memory, capability limits, execution state and unresolved questions, in a fixed priority order with mandatory instruction sections first.",
         "Budget: window 128000 tokens, output reserve 1024 (window source: built-in table for a known model (the provider's /models endpoint does not report context length)).",
-        "6 context report(s) recorded; each names what was included and what was omitted, so a decision to drop something is auditable.",
+        "8 context report(s) recorded; each names what was included and what was omitted, so a decision to drop something is auditable.",
         "Estimates are labelled estimates and calibrated against real provider usage when the provider reports it; a build that cannot fit the mandatory sections refuses rather than truncating a rule."
       ],
       "evidence": {
         "context_window": null,
         "output_reserve": 1024,
-        "reports": 6,
+        "reports": 8,
         "window_source": "built-in table for a known model (the provider's /models endpoint does not report context length)"
       }
     },
@@ -223,13 +594,15 @@
       "number": 7,
       "title": "Durable task state and recovery",
       "body": [
-        "2 task(s) and 6 step(s) recorded; intents by state: none.",
-        "0 recovery finding(s) journalled. Each is a determination from evidence: confirmed_complete, not_executed, conflicting or unknown.",
+        "4 task(s) and 9 step(s) recorded; intents by state: {'done': 2}.",
+        "1 recovery finding(s) journalled. Each is a determination from evidence: confirmed_complete, not_executed, conflicting or unknown.",
         "Recovery never replays blind: an operation that landed is not repeated, and an operation whose effect is unobservable is reported as unknown with the argv it ran."
       ],
       "evidence": {
-        "intents": {},
-        "recovery_findings": 0
+        "intents": {
+          "done": 2
+        },
+        "recovery_findings": 1
       }
     },
     {
@@ -245,18 +618,60 @@
           {
             "name": "memory_recent",
             "status": "active",
-            "requirement": "A returning agent must be able to enumerate what it learned recently without already knowing a keyword, so it can re-apply its own experience at the start of a session.",
+            "requirement": "A returning agent must be able to enumerate what it learned recently without already knowing a keyword.",
             "rationale": "",
             "implementation": "/home/user/Livium/livium/promoted/memory_recent.py",
-            "tests": "/tmp/live/capability-lab/memory_recent/test_memory_recent.py",
+            "tests": "/tmp/livium-release/capability-lab/memory_recent/test_memory_recent.py",
             "verification": "tests executed and passed; promoted after SHA-256 1d907e7e047b4dc7",
-            "evidence": "argv=['python3', '-m', 'unittest', 'discover', '-s', '/tmp/live/capability-lab/memory_recent', '-p', 'test_*.py', '-v']\nexit_code=0 duration_ms=286 network_isolated=True\n--- stderr (test runner output) ---\ntest_bad_arguments_are_reported (test_memory_recent.TestMemoryRecent.test_bad_arguments_are_reported) ... ok\ntest_content_change_moves_a_record_to_the_front (test_memory_recent.TestMemoryRecent.test_content_change_moves_a_record_to_the_front)\nThe ordering must follow real updates, not insertion order. ... ok\ntest_empty_memory_is_reported_honestly (test_memory_recent.TestMemoryRecent.test_empty_memory_is_reported_honestly) ... ok\ntest_kind_filter_is_applied (test_memory_recent.TestMemoryRecent.test_kind_filter_is_applied) ... ok\ntest_limit_is_respected_and_clamped (test_memory_recent.TestMemoryRecent.test_limit_is_respected_and_clamped) ... ok\ntest_missing_memory_service_is_an_error_not_an_empty_list (test_memory_recent.TestMemoryRecent.test_missing_memory_service_is_an_error_not_an_empty_list) ... ok\ntest_retired_records_are_not_listed_as_current_knowledge (test_memory_recent.TestMemoryRecent.test_retired_records_are_not_listed_as_current_knowledge) ... ok\ntest_returns_records_newest_first (test_memory_recent.TestMemoryRecent.test_returns_records_newest_first) ... ok\ntest_trust_information_travels_with_each_record (test_memory_recent.TestMemoryRecent.test_trust_information_travels_with_each_record) ... ok\ntest_unknown_tool_name_is_refused (test_memory_recent.TestMemoryRecent.test_unknown_tool_name_is_refused) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.220s\n\nOK\n",
-            "reuse_analysis": "1. Direct reuse: none. memory_search requires a non-empty query and ranks by term match, so 'what did I learn recently?' returns zero rows (measured). 2. Composition: no existing tool reaches the memory table. 3. Extension: an empty-query mode on memory_search would give one tool two contradictory contracts; a separate read-only tool is smaller.",
+            "evidence": "argv=['python3', '-m', 'unittest', 'discover', '-s', '/tmp/livium-release/capability-lab/memory_recent', '-p', 'test_*.py', '-v']\nexit_code=0 duration_ms=740 network_isolated=True\n--- stderr (test runner output) ---\ntest_bad_arguments_are_reported (test_memory_recent.TestMemoryRecent.test_bad_arguments_are_reported) ... ok\ntest_content_change_moves_a_record_to_the_front (test_memory_recent.TestMemoryRecent.test_content_change_moves_a_record_to_the_front)\nThe ordering must follow real updates, not insertion order. ... ok\ntest_empty_memory_is_reported_honestly (test_memory_recent.TestMemoryRecent.test_empty_memory_is_reported_honestly) ... ok\ntest_kind_filter_is_applied (test_memory_recent.TestMemoryRecent.test_kind_filter_is_applied) ... ok\ntest_limit_is_respected_and_clamped (test_memory_recent.TestMemoryRecent.test_limit_is_respected_and_clamped) ... ok\ntest_missing_memory_service_is_an_error_not_an_empty_list (test_memory_recent.TestMemoryRecent.test_missing_memory_service_is_an_error_not_an_empty_list) ... ok\ntest_retired_records_are_not_listed_as_current_knowledge (test_memory_recent.TestMemoryRecent.test_retired_records_are_not_listed_as_current_knowledge) ... ok\ntest_returns_records_newest_first (test_memory_recent.TestMemoryRecent.test_returns_records_newest_first) ... ok\ntest_trust_information_travels_with_each_record (test_memory_recent.TestMemoryRecent.test_trust_information_travels_with_each_record) ... ok\ntest_unknown_tool_name_is_refused (test_memory_recent.TestMemoryRecent.test_unknown_tool_name_is_refused) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.627s\n\nOK\n",
+            "reuse_analysis": "1. Direct reuse: none -- memory_search requires a non-empty query and ranks by term match, so the recency question returns zero rows (measured above). 2. Composition: no existing tool reaches the memory table. 3. Extension: an empty-query mode on memory_search would give one tool two contradictory contracts with ambiguous output; a separate read-only tool is the smaller change.",
             "lines": 105,
-            "created_at": "2026-10-15T07:03:24+00:00",
-            "updated_at": "2026-10-15T07:03:29+00:00",
-            "promoted_at": "2026-10-15T07:03:29+00:00",
-            "promoted_by": "Repo maintainer"
+            "created_at": "2026-10-15T08:21:04+00:00",
+            "updated_at": "2026-10-15T08:21:42+00:00",
+            "promoted_at": "2026-10-15T08:21:06+00:00",
+            "promoted_by": "Aditya (human)",
+            "description": "Lists the most recently updated memory records, newest first.",
+            "tools": [
+              {
+                "name": "memory_recent",
+                "description": "List the most recently updated memory records, newest first. Use this at the start of a session (or when resuming work) to see what you learned before. Each row shows its kind, verification state and confidence: a recent record is not necessarily a true one. Prefer memory_search when you do know a keyword.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "limit": {
+                      "type": "integer",
+                      "description": "How many records to return, 1-50. Default 10."
+                    },
+                    "kinds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "foundational",
+                          "capability",
+                          "experience",
+                          "decision",
+                          "failure",
+                          "task"
+                        ]
+                      },
+                      "description": "Restrict to these memory kinds. Default: all kinds."
+                    }
+                  },
+                  "required": []
+                },
+                "side_effects": false
+              }
+            ],
+            "dependencies": [],
+            "required_permissions": [],
+            "implementation_ref": "/home/user/Livium/livium/promoted/memory_recent.py",
+            "limitations": null,
+            "version": 1,
+            "validated": true,
+            "provides": [
+              "memory_recent"
+            ]
           }
         ]
       }
@@ -302,13 +717,14 @@
       "evidence": {
         "permissions": {
           "read_roots": [
-            "/tmp/live/workspace",
-            "/tmp/live/capability-lab",
+            "/tmp/livium-release/workspace",
+            "/tmp/livium-release/capability-lab",
             "/home/user/Livium"
           ],
+          "approval_write_roots": [],
           "write_roots": [
-            "/tmp/live/workspace",
-            "/tmp/live/capability-lab"
+            "/tmp/livium-release/workspace",
+            "/tmp/livium-release/capability-lab"
           ],
           "protected": [
             "/home/user/Livium/livium/prompts",
@@ -455,14 +871,12 @@
       "title": "Honesty of verification",
       "body": [
         "A model's completion claim does not close a task: acceptance criteria are executed by the harness, and unmet criteria are reported as a partial result with the remaining criteria named.",
-        "Verification results recorded: {'failed': 1, 'manual': 1, 'passed': 3}.",
+        "Verification results recorded: {'passed': 3}.",
         "Tasks that cannot run end `blocked` with the real error rather than a substituted answer; the provider probe is real HTTP, not a configuration check.",
         "Six product defects were found by these tests and fixed in the product rather than worked around in a test, each now pinned by a regression test: a scaffold that could validate itself; a per-call command timeout accepted and ignored; an explicit numeric zero silently rewritten to the default; a missing working directory reported as 'executable not found' (exit 127); a runner error path that raised TypeError instead of returning its result; and a viewer reading status.permissions from a payload that never contained it. Details in CHANGELOG.md."
       ],
       "evidence": {
         "verifications": {
-          "failed": 1,
-          "manual": 1,
           "passed": 3
         },
         "provider_probe": {
@@ -511,21 +925,105 @@
           }
         ]
       }
+    },
+    {
+      "number": 13,
+      "title": "Task-directed information flow: what was measured",
+      "body": [
+        "Router decisions recorded in this home: execute 6, verify 2, retrieve_context 1. The router is a deterministic state machine; the model recommends and the harness enforces.",
+        "Tool interfaces sent per step: 7-7 of 13 available, selected from the objective and the state of the run; the compact catalog is what makes every interface unnecessary.",
+        "Ledger: 3 task row(s). Actual token usage was reported for 0 of the last 3 task(s); where usage was not reported the column is NULL and the estimate is stored separately, never merged with it.",
+        "No operation has needed human approval in this home; the queue, the CLI decision path and the one-decision-one-execution rule are covered by tests.",
+        "Promoted capability tools: memory_recent.",
+        "Not verified here: real-provider token counts. No hosted provider is reachable from this environment, so every actual token number that exists was produced by a transport that reports usage; the code path for real providers is the same one."
+      ],
+      "evidence": {
+        "route_decisions": {
+          "execute": 6,
+          "verify": 2,
+          "retrieve_context": 1
+        },
+        "interfaces_per_step": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "tools_available": 13,
+        "approvals": {},
+        "ledger": {
+          "tasks": 3,
+          "categories": {
+            "reasoning": {
+              "tasks": 1,
+              "actual_tokens": 0,
+              "actual_tokens_covered": 0,
+              "estimated_tokens": 5831,
+              "reused": 0,
+              "new_development": 0,
+              "experience": 0,
+              "retries": 0,
+              "failures": 0,
+              "verified": 0,
+              "median_model_calls": 2
+            },
+            "file-production": {
+              "tasks": 1,
+              "actual_tokens": 0,
+              "actual_tokens_covered": 0,
+              "estimated_tokens": 10597,
+              "reused": 0,
+              "new_development": 0,
+              "experience": 0,
+              "retries": 0,
+              "failures": 0,
+              "verified": 1,
+              "median_model_calls": 3
+            },
+            "recall": {
+              "tasks": 1,
+              "actual_tokens": 0,
+              "actual_tokens_covered": 0,
+              "estimated_tokens": 6361,
+              "reused": 1,
+              "new_development": 0,
+              "experience": 0,
+              "retries": 0,
+              "failures": 0,
+              "verified": 1,
+              "median_model_calls": 2
+            }
+          },
+          "note": "actual token totals cover only the tasks where the provider reported usage; estimated totals are the context manager's own arithmetic and are not measurements"
+        },
+        "promoted_tools": [
+          "memory_recent"
+        ],
+        "context_reports_sampled": 8
+      }
     }
   ],
   "tests": {
-    "methods": 211,
+    "methods": 289,
     "files": {
       "test_agent": 17,
+      "test_approval": 17,
       "test_capabilities": 18,
       "test_config": 4,
       "test_context": 12,
       "test_execution": 20,
       "test_guardian": 14,
+      "test_hygiene": 3,
+      "test_ledger": 13,
       "test_memory": 17,
+      "test_mission": 18,
       "test_models": 15,
-      "test_permissions": 20,
+      "test_permissions": 23,
       "test_recovery": 9,
+      "test_router": 24,
       "test_server": 6,
       "test_store": 7,
       "test_tools": 34,
@@ -534,14 +1032,14 @@
     "source": "unittest discovery"
   },
   "stats": {
-    "memory": 12,
-    "event": 99,
-    "task": 2,
-    "task_step": 6,
-    "intent": 0,
+    "memory": 40,
+    "event": 118,
+    "task": 4,
+    "task_step": 9,
+    "intent": 2,
     "capability": 1,
-    "context_report": 6,
-    "verification": 5
+    "context_report": 8,
+    "verification": 3
   },
   "demonstrations": [
     {
@@ -573,6 +1071,419 @@
       "outcome": "verified"
     }
   ],
+  "mission": {
+    "route_decisions": {
+      "execute": 6,
+      "verify": 2,
+      "retrieve_context": 1
+    },
+    "interfaces_per_step": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "approvals": {},
+    "ledger": {
+      "tasks": 3,
+      "categories": {
+        "reasoning": {
+          "tasks": 1,
+          "actual_tokens": 0,
+          "actual_tokens_covered": 0,
+          "estimated_tokens": 5831,
+          "reused": 0,
+          "new_development": 0,
+          "experience": 0,
+          "retries": 0,
+          "failures": 0,
+          "verified": 0,
+          "median_model_calls": 2
+        },
+        "file-production": {
+          "tasks": 1,
+          "actual_tokens": 0,
+          "actual_tokens_covered": 0,
+          "estimated_tokens": 10597,
+          "reused": 0,
+          "new_development": 0,
+          "experience": 0,
+          "retries": 0,
+          "failures": 0,
+          "verified": 1,
+          "median_model_calls": 3
+        },
+        "recall": {
+          "tasks": 1,
+          "actual_tokens": 0,
+          "actual_tokens_covered": 0,
+          "estimated_tokens": 6361,
+          "reused": 1,
+          "new_development": 0,
+          "experience": 0,
+          "retries": 0,
+          "failures": 0,
+          "verified": 1,
+          "median_model_calls": 2
+        }
+      },
+      "note": "actual token totals cover only the tasks where the provider reported usage; estimated totals are the context manager's own arithmetic and are not measurements"
+    },
+    "promoted_tools": [
+      "memory_recent"
+    ],
+    "demonstrations": [
+      {
+        "demonstration": "M1 selective retrieval",
+        "outcome": "verified",
+        "detail": "the store held 37 memory records; 2 reached the prompt and they are exactly the ones with the right terms",
+        "evidence": {
+          "records_in_store": 37,
+          "records_injected": [
+            34,
+            35
+          ],
+          "relevant_ids": [
+            34,
+            35
+          ],
+          "all_injected_are_relevant": true,
+          "prompt_chars": 10181,
+          "tokens_estimated": 2910,
+          "included_sections": {
+            "instructions": 4,
+            "objective": 2,
+            "execution_state": 1,
+            "memory": 3,
+            "capabilities": 2,
+            "background": 2
+          },
+          "tool_interfaces_exposed": [
+            "read_file",
+            "list_dir",
+            "sha256",
+            "write_file",
+            "finish_task",
+            "request_capability",
+            "tool_info"
+          ],
+          "tools_available": 12,
+          "route": "execute",
+          "model_replies": "scripted test double (stated in every reply record)"
+        },
+        "at": "2026-10-15T08:21:07+0000"
+      },
+      {
+        "demonstration": "M2 capability discovery",
+        "outcome": "verified",
+        "detail": "the capability was found by requirement words, its declared interface was loaded, and it ran 1 time(s) in a later session",
+        "evidence": {
+          "lifecycle": {
+            "status": "active",
+            "tools": [
+              "word_count"
+            ],
+            "test_exit_code": 0,
+            "test_duration_ms": 115,
+            "network_isolated": null
+          },
+          "search_matches": [
+            {
+              "name": "word_count",
+              "status": "active",
+              "validated": true,
+              "matched_terms": [
+                "count",
+                "file",
+                "the",
+                "words"
+              ]
+            }
+          ],
+          "interface_tool_schema": [
+            {
+              "name": "word_count",
+              "description": "Count words in a workspace file.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              },
+              "side_effects": false
+            }
+          ],
+          "interface_limitations": "ASCII whitespace only; no per-language tokenisation.",
+          "catalog_entry": {
+            "name": "word_count",
+            "purpose": "Count words in a workspace file.",
+            "permissions": [
+              "read"
+            ],
+            "side_effects": false,
+            "source": "capability:word_count",
+            "validation": "capability:active"
+          },
+          "capability_tool_calls": [
+            {
+              "arguments_digest": "9b83205689173614",
+              "category": "",
+              "denied": false,
+              "error": "",
+              "ok": true,
+              "purpose": "the discovered capability",
+              "step": 2,
+              "tool": "word_count"
+            }
+          ],
+          "task_status": "complete",
+          "verification": "verified",
+          "route_decisions": [
+            [
+              1,
+              "execute"
+            ],
+            [
+              2,
+              "execute"
+            ],
+            [
+              3,
+              "execute"
+            ],
+            [
+              4,
+              "verify"
+            ]
+          ]
+        },
+        "at": "2026-10-15T08:21:07+0000"
+      },
+      {
+        "demonstration": "M3 failure changes the next action",
+        "outcome": "verified",
+        "detail": "the write was refused as requiring approval, the run stopped instead of retrying, and one human decision released exactly one execution",
+        "evidence": {
+          "refusal": {
+            "status": "awaiting_approval",
+            "denials": 1,
+            "file_exists": false,
+            "approvals_requested": 1,
+            "route_decisions": [
+              [
+                1,
+                "execute"
+              ],
+              [
+                2,
+                "request_authorization"
+              ]
+            ],
+            "pending": [
+              {
+                "id": 1,
+                "task_id": "m3-approval",
+                "tool": "write_file",
+                "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-mission/restricted/release.md\",\"purpose\":\"the release file\"}",
+                "reason": "write needs approval: /tmp/livium-mission/restricted/release.md is inside an approval root (/tmp/livium-mission/restricted). A human decides, not the agent; see `livium approvals`.",
+                "status": "pending",
+                "created_at": "2026-10-15T08:21:07+00:00",
+                "decided_at": null,
+                "decided_by": null,
+                "note": null
+              }
+            ]
+          },
+          "human_decision": {
+            "decided": true,
+            "id": 1,
+            "status": "approved",
+            "by": "Aditya (human)",
+            "recorded": true,
+            "after_approval": {
+              "status": "partial",
+              "denials": 0,
+              "file_exists": true,
+              "route_decisions": [
+                [
+                  1,
+                  "execute"
+                ],
+                [
+                  2,
+                  "execute"
+                ],
+                [
+                  3,
+                  "retrieve_context"
+                ]
+              ]
+            },
+            "second_attempt_same_task": {
+              "status": "awaiting_approval",
+              "denials": 1,
+              "approvals_requested": 1
+            },
+            "approval_rows": [
+              {
+                "id": 2,
+                "status": "pending",
+                "decided_by": null
+              },
+              {
+                "id": 1,
+                "status": "consumed",
+                "decided_by": "Aditya (human)"
+              }
+            ]
+          }
+        },
+        "at": "2026-10-15T08:21:08+0000"
+      },
+      {
+        "demonstration": "M4 resume after interruption",
+        "outcome": "verified",
+        "detail": "a killed process left one unconfirmed side effect; the resumed run established its real outcome from the filesystem before continuing",
+        "evidence": {
+          "child_output": "intent 3 recorded and the file landed; killing the process before the intent could be confirmed",
+          "child_exit": "killed by signal 9",
+          "pending_intents_before_resume": 1,
+          "inspection_next_action": "Every interrupted operation has been accounted for from evidence; the task can continue from: its objective",
+          "inspection_findings": [
+            {
+              "intent_id": 3,
+              "tool": "write_file",
+              "determination": "confirmed_complete",
+              "detail": "/tmp/livium-mission/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
+              "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792052468594515156 path=/tmp/livium-mission/workspace/interrupted.md"
+            }
+          ],
+          "intent_rows_after_resume": [
+            {
+              "tool": "write_file",
+              "status": "done"
+            }
+          ],
+          "resumed_task_status": "partial",
+          "resumed_verification": "verified",
+          "route_decisions": [
+            [
+              1,
+              "execute"
+            ],
+            [
+              2,
+              "retrieve_context"
+            ]
+          ]
+        },
+        "at": "2026-10-15T08:21:08+0000"
+      },
+      {
+        "demonstration": "M5 experience reuse across processes",
+        "outcome": "verified",
+        "detail": "a record written by one process was retrieved by another and the tool it named was the tool that ran; the ledger stores the link, not an impression",
+        "evidence": {
+          "written_by_process_1": {
+            "memory_id": 49,
+            "action": "created"
+          },
+          "process_2": {
+            "status": "complete",
+            "verification": "verified",
+            "capability_reused": true,
+            "new_development": false,
+            "experience_influenced": true,
+            "memory_ids": [
+              49,
+              39,
+              38
+            ],
+            "experience_evidence": {
+              "reuse": [
+                {
+                  "memory_id": 49,
+                  "kind": "capability",
+                  "key": "word_count",
+                  "tools": [
+                    "word_count"
+                  ],
+                  "why": "the record named a tool that this run then executed"
+                }
+              ],
+              "avoided_repetition": []
+            },
+            "tools_executed": [
+              "write_file",
+              "word_count",
+              "finish_task",
+              "write_file",
+              "write_file",
+              "write_file",
+              "write_file",
+              "word_count",
+              "finish_task"
+            ],
+            "route_decisions": [
+              [
+                1,
+                "execute"
+              ],
+              [
+                2,
+                "execute"
+              ],
+              [
+                3,
+                "execute"
+              ],
+              [
+                4,
+                "verify"
+              ]
+            ]
+          }
+        },
+        "at": "2026-10-15T08:21:09+0000"
+      },
+      {
+        "demonstration": "M6 token accounting",
+        "outcome": "verified",
+        "detail": "a reporting transport produced actual counts; a silent one produced nulls and a labelled estimate, with no number invented for the missing measurement",
+        "evidence": {
+          "rows": {
+            "reported": {
+              "model_calls": 2,
+              "prompt_tokens_actual": 2900,
+              "completion_tokens_actual": 180,
+              "usage_reported_calls": 2,
+              "tokens_estimated": 10254,
+              "task_status": "complete"
+            },
+            "unreported": {
+              "model_calls": 2,
+              "prompt_tokens_actual": null,
+              "completion_tokens_actual": null,
+              "usage_reported_calls": 0,
+              "tokens_estimated": 10501,
+              "task_status": "complete"
+            }
+          },
+          "model": "usage-reporting test double (no real provider is reachable here)"
+        },
+        "at": "2026-10-15T08:21:09+0000"
+      }
+    ],
+    "evidence_age": "1 min old"
+  },
   "planned": [
     {
       "item": "Live inference against a hosted provider",

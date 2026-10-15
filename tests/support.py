@@ -35,6 +35,9 @@ class TempHome:
             "LIVIUM_DB": str(self.dir / "livium.db"),
             "LIVIUM_WORKSPACE": str(self.dir / "workspace"),
             "LIVIUM_EVIDENCE": str(self.dir / "evidence"),
+            # Promotion writes a capability where the loader will import it. Inside
+            # tests that must be the temporary home, never the working checkout.
+            "LIVIUM_PROMOTED_DIR": str(self.dir / "promoted"),
             "LIVIUM_ALLOW_TEST_DOUBLE": "1",
             "LIVIUM_PROVIDER": "scripted",
         }

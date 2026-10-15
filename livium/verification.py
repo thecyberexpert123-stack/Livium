@@ -186,7 +186,7 @@ class Verifier:
         return pathlib.Path(str(path))
 
     def _read(self, path: pathlib.Path, criterion: dict[str, Any]) -> tuple[str | None, CriterionResult | None]:
-        decision = self.engine.check_read(path)
+        decision = self.engine.check_verification_read(path)
         if not decision.allowed:
             return None, CriterionResult(criterion, ERROR, f"blocked by permissions: {decision.reason}")
         if not path.exists():
@@ -197,7 +197,7 @@ class Verifier:
 
     def _file_exists(self, criterion: dict[str, Any]) -> CriterionResult:
         path = self._path(criterion)
-        decision = self.engine.check_read(path)
+        decision = self.engine.check_verification_read(path)
         if not decision.allowed:
             return CriterionResult(criterion, ERROR, f"blocked by permissions: {decision.reason}")
         if path.exists():

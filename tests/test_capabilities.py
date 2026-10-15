@@ -241,7 +241,7 @@ class PromotionTests(CapabilityFixture):
         self.registry.scaffold(name)
         self.implement(name, GOOD_MODULE, GOOD_TEST)
         self.registry.run_tests(name)
-        self.guardian.record_baseline(approved_by="Test Human")
+        self.guardian.record_baseline(approved_by="Test Human", force=True)
 
     def test_promotion_requires_tests_to_have_passed(self) -> None:
         self.registry.propose(name="line_count", requirement="r", reuse_analysis="a")

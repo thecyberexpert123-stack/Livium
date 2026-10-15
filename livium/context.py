@@ -37,14 +37,19 @@ from .store import Store, now
 
 # Priority order, highest first. Mandatory sections are allocated before any
 # optional section competes for space, regardless of the numbers below.
+#: Priority order from the specification: security/instructions first, then the
+#: objective and its criteria, then state, then evidence, then applicable capabilities,
+#: then experience, then supporting background. A section dropped for budget is dropped
+#: whole and recorded -- never silently shortened.
 SECTION_PRIORITY = {
     "instructions": 1,
     "objective": 2,
     "execution_state": 3,
     "evidence": 4,
-    "memory": 5,
-    "unresolved": 6,
-    "background": 7,
+    "capabilities": 5,
+    "memory": 6,
+    "unresolved": 7,
+    "background": 8,
 }
 MANDATORY_SECTIONS = ("instructions", "objective", "execution_state")
 
@@ -165,6 +170,9 @@ class ContextManager:
         criteria_results: Sequence[dict[str, Any]] = (),
         pending_intents: Sequence[dict[str, Any]] = (),
         extra_instructions: str = "",
+        route: dict[str, Any] | None = None,
+        exposed_tools: Sequence[str] = (),
+        tool_catalog: Sequence[dict[str, Any]] = (),
     ) -> BuiltContext:
         budget = TokenBudget(self.config, self.store)
         # The system block is part of the request, so its cost must be paid before
@@ -175,13 +183,16 @@ class ContextManager:
         system_tokens = budget.estimate(system)
         section_allowance = max(budget.available - system_tokens, 512)
 
+        memory_ids: list[int] = []
         sections: list[Section] = [
             self._instructions(extra_instructions),
             self._objective(task),
-            self._execution_state(task, step, observations, criteria_results, pending_intents),
+            self._execution_state(task, step, observations, criteria_results, pending_intents,
+                                  route),
             self._evidence(task),
-            self._memory(task),
+            self._memory(task, memory_ids),
             self._unresolved(task, criteria_results, pending_intents),
+            self._capabilities(exposed_tools, tool_catalog),
             self._background(),
         ]
 
@@ -206,6 +217,12 @@ class ContextManager:
             "within_window": not over_budget,
             "included_sections": included,
             "omitted": omitted,
+            "generated_at": now(),
+            # What the ledger needs to answer "did retrieval actually reach this task":
+            # identifiers, not contents.
+            "memory_ids": memory_ids,
+            "exposed_tools": list(exposed_tools),
+            "route": (route or {}).get("decision"),
             "generated_at": now(),
         }
         if over_budget:
@@ -263,6 +280,7 @@ class ContextManager:
         observations: Sequence[str],
         criteria_results: Sequence[dict[str, Any]],
         pending_intents: Sequence[dict[str, Any]],
+        route: dict[str, Any] | None = None,
     ) -> Section:
         items = [
             f"Step {step} of {self.config.limits.max_steps}. "
@@ -295,7 +313,7 @@ class ContextManager:
             items.append("\n".join(lines))
         return Section("evidence", False, items, [])
 
-    def _memory(self, task: dict[str, Any]) -> Section:
+    def _memory(self, task: dict[str, Any], sink: list[int] | None = None) -> Section:
         query = " ".join(
             filter(None, [str(task.get("objective", "")), str(task.get("key_terms", ""))])
         )
@@ -310,6 +328,8 @@ class ContextManager:
                 items.extend(f"  {r.render(full=True)}" for r in records)
                 for record in records:
                     record_id = record.id
+                    if sink is not None:
+                        sink.append(record_id)
                     self.store.append_event(
                         "memory_retrieved",
                         {"id": record_id, "score": round(record.score, 4),
@@ -346,6 +366,34 @@ class ContextManager:
                 )
             )
         return Section("unresolved", False, items, [])
+
+    def _capabilities(self, exposed: Sequence[str],
+                      catalog: Sequence[dict[str, Any]]) -> Section:
+        """The compact catalog, plus which full interfaces this request carries.
+
+        The whole point of this section is that it is cheap: one line per tool instead
+        of every argument schema, with the detail attached only for the tools this
+        step needs. ``tool_info`` fetches anything else.
+        """
+
+        items: list[str] = []
+        if exposed:
+            items.append(
+                "Full interfaces attached to this request: " + ", ".join(exposed)
+                + " (call tool_info for any other tool's arguments)."
+            )
+        if catalog:
+            lines = []
+            for entry in catalog:
+                needs = ",".join(entry.get("permissions") or [])
+                flags = [f"needs {needs}" if needs else "",
+                         "writes" if entry.get("side_effects") else ""]
+                suffix = " [" + ", ".join(f for f in flags if f) + "]" if any(flags) else ""
+                validation = entry.get("validation") or ""
+                state = "" if validation.startswith("builtin") else f" ({validation})"
+                lines.append(f"  {entry.get('name')}: {entry.get('purpose')}{suffix}{state}")
+            items.append("Available tools (compact listing):\n" + "\n".join(lines))
+        return Section("capabilities", False, items, [])
 
     def _background(self) -> Section:
         items: list[str] = []

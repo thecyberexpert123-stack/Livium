@@ -41,6 +41,15 @@ GIT_ALLOWED_SUBCOMMANDS = frozenset(
     {"status", "log", "diff", "show", "rev-parse", "ls-files", "describe",
      "blame", "shortlog", "cat-file", "grep", "remote-get-url", "version"}
 )
+#: Names that describe nobody. An approval, a promotion or a baseline recorded under
+#: one of these is not attributable to a person, which is the only property that makes
+#: it a decision rather than a state change the agent could have arranged for itself.
+UNATTRIBUTED_NAMES = frozenset({
+    "anonymous", "anon", "unknown", "unspecified", "none", "nobody", "n/a", "na", "-",
+    "agent", "livium", "self", "auto", "model", "system", "root", "admin",
+})
+
+
 GIT_REFUSED_SUBCOMMANDS = frozenset(
     {"push", "pull", "fetch", "clone", "commit", "merge", "rebase", "reset",
      "clean", "checkout", "restore", "stash", "switch", "config", "remote",
@@ -87,11 +96,19 @@ class PermissionEngine:
     def __init__(self, config: Config):
         self.config = config
         self._read_roots = tuple(self._norm(p) for p in config.perms.read_roots)
+        #: Paths a human authorised as approvable writes. Kept separately because they
+        #: gain one specific privilege (a verification read) and nothing else.
+        self._approval_write_roots = tuple(
+            self._norm(p) for p in getattr(config.perms, "approval_write_roots", ()) or ()
+        )
         self._write_roots = tuple(self._norm(p) for p in config.perms.write_roots)
         self._protected = tuple(self._norm(p) for p in config.perms.protected_paths)
         self._allowed_binaries = {b for b in config.perms.allowed_binaries}
         self._denied_binaries = {b for b in config.perms.denied_binaries}
         self._network_allowlist = {h.lower() for h in config.perms.network_allowlist}
+        self._approval_binaries = {b for b in config.perms.approval_binaries}
+        self._approval_roots = tuple(
+            self._norm(p) for p in getattr(config.perms, "approval_write_roots", ()))
         self._protected_files: tuple[pathlib.Path, ...] = tuple(
             p for p in self._protected if p.suffix
         )
@@ -128,6 +145,33 @@ class PermissionEngine:
             "path",
         )
 
+    def check_verification_read(self, path: str | pathlib.Path) -> Decision:
+        """Reading, for the purpose of checking an acceptance criterion.
+
+        Identical to ``check_read`` except for one case that would otherwise be
+        unsatisfiable: a path an operator has authorised as an approval write root.
+        The agent may write there only with a recorded human approval, so the harness
+        must be able to read what it wrote -- otherwise an approved operation can never
+        be verified and every such task ends 'not verified' for a reason that has
+        nothing to do with the work. The relaxation is confined to paths a human put in
+        the configuration; nothing else gains read access, and the decision is returned
+        with its reason rather than being silent.
+        """
+
+        decision = self.check_read(path)
+        if decision.allowed:
+            return decision
+        target = self._norm(path)
+        for root in getattr(self, "_approval_write_roots", ()) or ():
+            if self._within(target, (self._norm(root),)):
+                return Decision(
+                    ALLOW,
+                    f"read permitted for verification: {target} is an approval write root "
+                    f"({root}); the write there required a recorded human approval",
+                    "path",
+                )
+        return decision
+
     def check_write(self, path: str | pathlib.Path) -> Decision:
         target = self._norm(path)
         if self.is_protected(target):
@@ -140,6 +184,14 @@ class PermissionEngine:
             )
         if self._within(target, self._write_roots):
             return Decision(ALLOW, f"write permitted: {target}", "path")
+        if self._approval_roots and self._within(target, self._approval_roots):
+            return Decision(
+                APPROVAL,
+                f"write needs approval: {target} is inside an approval root "
+                f"({', '.join(str(r) for r in self._approval_roots)}). A human decides, not "
+                f"the agent; see `livium approvals`.",
+                "path",
+            )
         return Decision(
             DENY,
             f"write refused: {target} is outside the permitted write roots "
@@ -228,6 +280,7 @@ class PermissionEngine:
     def describe(self) -> dict:
         return {
             "read_roots": [str(p) for p in self._read_roots],
+            "approval_write_roots": [str(p) for p in self._approval_write_roots],
             "write_roots": [str(p) for p in self._write_roots],
             "protected": [str(p) for p in self._protected],
             "allowed_binaries": sorted(self._allowed_binaries),

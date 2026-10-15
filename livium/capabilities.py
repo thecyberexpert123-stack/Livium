@@ -26,6 +26,7 @@ import subprocess
 import sys
 from typing import Any
 
+from .permissions import UNATTRIBUTED_NAMES
 from .store import Store, now
 
 STATUSES = (
@@ -74,6 +75,12 @@ CAPABILITY = {{
     "name": {name!r},
     "requirement": {requirement!r},
     "description": "TODO: one line, describing what the tools below actually do.",
+    # Recorded in the registry when this is promoted, so a caller can see what the
+    # capability needs and what it does not do. Fill both in honestly: an empty
+    # limitations list on a nontrivial tool is usually a sign nobody looked.
+    "dependencies": [],
+    "permissions": [],
+    "limitations": "TODO: known limits, or 'none known' only if you checked.",
     "tools": [
         # Example entry -- replace with the tools this capability really provides,
         # or delete it if the capability adds no tools.
@@ -159,9 +166,37 @@ class Capability:
     updated_at: str
     promoted_at: str | None
     promoted_by: str | None
+    description: str | None = None
+    #: The tools the capability provides, as ``[{name, description, parameters}]``.
+    #: Empty until the implementation exists: a registry that guessed at an interface
+    #: before the code was written would be describing something that is not there.
+    tools: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    dependencies: list[str] = dataclasses.field(default_factory=list)
+    required_permissions: list[str] = dataclasses.field(default_factory=list)
+    implementation_ref: str | None = None
+    limitations: str | None = None
+    version: int = 1
+
+    @property
+    def validated(self) -> bool:
+        """True only if this capability passed its tests and was promoted.
+
+        The registry distinguishes *registered* from *working*: 'proposed' and
+        'experimental' mean the code either does not exist or has not been shown to
+        work, and anything selecting capabilities must treat them differently.
+        """
+
+        return self.status in ("active", "maintained")
+
+    @property
+    def provides(self) -> tuple[str, ...]:
+        return tuple(str(tool.get("name")) for tool in self.tools if tool.get("name"))
 
     def as_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        payload = dataclasses.asdict(self)
+        payload["validated"] = self.validated
+        payload["provides"] = list(self.provides)
+        return payload
 
     def render(self) -> str:
         parts = [
@@ -187,11 +222,12 @@ class CapabilityError(RuntimeError):
 
 
 class CapabilityRegistry:
-    def __init__(self, store: Store, *, repo_root: pathlib.Path | None = None, lab: pathlib.Path | None = None):
+    def __init__(self, store: Store, *, repo_root: pathlib.Path | None = None,
+                 lab: pathlib.Path | None = None, promoted: pathlib.Path | None = None):
         self.store = store
         self.repo_root = repo_root or pathlib.Path(__file__).resolve().parent.parent
         self.lab = lab or (self.repo_root / ".livium" / "capability-lab")
-        self.promoted_dir = self.repo_root / "livium" / "promoted"
+        self.promoted_dir = promoted or (self.repo_root / "livium" / "promoted")
 
     # -- reads ------------------------------------------------------------
     def get(self, name: str) -> Capability | None:
@@ -211,6 +247,111 @@ class CapabilityRegistry:
             if capability.status not in ("rejected", "deprecated")
         ][:limit]
 
+    def sync_metadata(self, name: str) -> dict[str, Any] | None:
+        """Re-read a capability's declaration from the module it points at.
+
+        A row can legitimately be older than the metadata columns: a capability promoted
+        before the registry recorded interfaces would otherwise be selected on a
+        description nobody can act on. This copies what the module *declares* -- it never
+        touches status, verification, or who promoted what, so it cannot launder an
+        unvalidated module into a validated one.
+        """
+
+        capability = self.get(name)
+        if capability is None or not capability.implementation:
+            return None
+        path = pathlib.Path(capability.implementation)
+        if not path.exists():
+            self.store.append_event(
+                "capability_metadata_refresh_failed",
+                {"name": name, "reason": f"implementation missing: {path}"},
+            )
+            return None
+        ok, detail, declaration = inspect_capability_module(path, expected_name=name)
+        if not ok:
+            self.store.append_event(
+                "capability_metadata_refresh_failed", {"name": name, "reason": detail}
+            )
+            return None
+        tools = [t for t in (declaration.get("tools") or []) if isinstance(t, dict)]
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE capability SET description=?, tools=?, dependencies=?, "
+                "required_permissions=?, limitations=?, implementation_ref=?, updated_at=? "
+                "WHERE name=?",
+                (
+                    declaration.get("description") or capability.description,
+                    json.dumps(tools),
+                    json.dumps(list(declaration.get("dependencies") or [])),
+                    json.dumps(list(declaration.get("permissions") or [])),
+                    declaration.get("limitations") or capability.limitations,
+                    str(path), now(), name,
+                ),
+            )
+        return {"name": name, "tools": [t.get("name") for t in tools],
+                "description": declaration.get("description")}
+
+    def interface_for(self, name: str) -> dict[str, Any] | None:
+        """The detailed interface of one capability, or None if there is not one yet.
+
+        This is the lazy half of discovery: the context carries a one-line catalog
+        entry, and the full argument schemas are fetched only when a capability is
+        actually being used.
+        """
+
+        capability = self.get(name)
+        if capability is None or not capability.validated:
+            return None
+        return {
+            "name": capability.name,
+            "description": capability.description or capability.requirement,
+            "tools": capability.tools,
+            "dependencies": capability.dependencies,
+            "required_permissions": capability.required_permissions,
+            "limitations": capability.limitations,
+            "implementation": capability.implementation_ref or capability.implementation,
+            "version": capability.version,
+            "validation": capability.status,
+        }
+
+    def search(self, query: str, *, limit: int = 5,
+               include_unvalidated: bool = False) -> list[dict[str, Any]]:
+        """Keyword search over the registry, with the truth about each match attached.
+
+        Structured queries and term overlap only: no embeddings, no vector store. Each
+        result says whether the capability can actually be used (``validated``) and what
+        it provides, so a caller cannot mistake a proposal for a working tool.
+        """
+
+        terms = {t for t in re.findall(r"[a-z0-9_]+", query.lower()) if len(t) >= 3}
+        results: list[dict[str, Any]] = []
+        for capability in self.all():
+            if capability.status in ("rejected", "deprecated"):
+                continue
+            if not include_unvalidated and not capability.validated:
+                continue
+            haystack = " ".join(filter(None, [
+                capability.name.replace("_", " "), capability.requirement,
+                capability.description or "", capability.limitations or "",
+                " ".join(capability.provides),
+            ])).lower()
+            overlap = sorted(term for term in terms if term in haystack)
+            if not overlap:
+                continue
+            results.append({
+                "name": capability.name,
+                "status": capability.status,
+                "validated": capability.validated,
+                "description": capability.description or capability.requirement,
+                "tools": list(capability.provides),
+                "required_permissions": capability.required_permissions,
+                "limitations": capability.limitations,
+                "matched_terms": overlap,
+                "score": len(overlap),
+            })
+        results.sort(key=lambda item: (-item["score"], item["name"]))
+        return results[:limit]
+
     # -- transitions ------------------------------------------------------
     def propose(
         self,
@@ -222,6 +363,10 @@ class CapabilityRegistry:
         verification_plan: str = "",
         reversible: bool = True,
         task_id: str | None = None,
+        description: str = "",
+        dependencies: Sequence[str] = (),
+        required_permissions: Sequence[str] = (),
+        limitations: str = "",
     ) -> Capability:
         if not _NAME.match(name):
             raise CapabilityError(
@@ -236,14 +381,20 @@ class CapabilityRegistry:
         with self.store.transaction() as conn:
             conn.execute(
                 "INSERT INTO capability(name, status, requirement, rationale, reuse_analysis, "
-                "verification, evidence, created_at, updated_at) "
-                "VALUES(?,'proposed',?,?,?,?,?,?,?) "
+                "verification, evidence, created_at, updated_at, description, dependencies, "
+                "required_permissions, limitations) "
+                "VALUES(?,'proposed',?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(name) DO UPDATE SET status='proposed', requirement=excluded.requirement, "
                 "rationale=excluded.rationale, reuse_analysis=excluded.reuse_analysis, "
-                "verification=excluded.verification, updated_at=excluded.updated_at",
+                "verification=excluded.verification, description=excluded.description, "
+                "dependencies=excluded.dependencies, "
+                "required_permissions=excluded.required_permissions, "
+                "limitations=excluded.limitations, updated_at=excluded.updated_at",
                 (name, requirement, rationale, reuse_analysis,
                  f"plan: {verification_plan}" if verification_plan else None,
-                 f"reversible={reversible}", now(), now()),
+                 f"reversible={reversible}", now(), now(), description or None,
+                 json.dumps(list(dependencies)), json.dumps(list(required_permissions)),
+                 limitations or None),
             )
         self.store.append_event(
             "capability_proposed",
@@ -374,7 +525,7 @@ class CapabilityRegistry:
         callable, and the agent cannot call it.
         """
 
-        if not approved_by or approved_by.strip().lower() in ("agent", "livium", "self", "auto"):
+        if not approved_by or approved_by.strip().lower() in UNATTRIBUTED_NAMES:
             raise CapabilityError(
                 "promotion requires a named human approver who is not the agent; "
                 "self-approval is not accepted"
@@ -395,7 +546,7 @@ class CapabilityRegistry:
         source = self.lab / name / f"{name}.py"
         if not source.exists():
             raise CapabilityError(f"lab implementation missing: {source}")
-        changed, detail = validate_capability_module(source, expected_name=name)
+        changed, detail, declaration = inspect_capability_module(source, expected_name=name)
         if not changed:
             raise CapabilityError(f"capability module failed validation: {detail}")
 
@@ -404,9 +555,18 @@ class CapabilityRegistry:
         destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         digest = hashlib.sha256(destination.read_bytes()).hexdigest()
 
+        # Record the interface the module actually declares, not one typed into the
+        # proposal: the registry's metadata has to describe code that exists.
+        tools = [t for t in (declaration.get("tools") or []) if isinstance(t, dict)]
         self._set_status(
             name, "active", implementation=str(destination), promoted_by=approved_by.strip(),
             verification=(capability.verification or "") + f"; promoted after SHA-256 {digest[:16]}",
+            description=declaration.get("description") or capability.description,
+            tools=json.dumps(tools),
+            dependencies=json.dumps(list(declaration.get("dependencies") or [])),
+            required_permissions=json.dumps(list(declaration.get("permissions") or [])),
+            limitations=declaration.get("limitations") or capability.limitations,
+            implementation_ref=str(destination),
         )
         with self.store.transaction() as conn:
             conn.execute(
@@ -500,7 +660,20 @@ def _count_lines(path: pathlib.Path) -> int | None:
         return None
 
 
-def validate_capability_module(path: pathlib.Path, *, expected_name: str | None = None) -> tuple[bool, str]:
+def inspect_capability_module(path: pathlib.Path, *, expected_name: str | None = None
+                              ) -> tuple[bool, str, dict[str, Any]]:
+    """Validate a module and return its declaration.
+
+    The declaration is what the registry records, so capability metadata comes from the
+    module that actually exists rather than from what someone typed into a proposal.
+    """
+
+    ok, detail, declaration = _probe_capability_module(path, expected_name=expected_name)
+    return ok, detail, declaration
+
+
+def _probe_capability_module(path: pathlib.Path, *, expected_name: str | None = None
+                            ) -> tuple[bool, str, dict[str, Any]]:
     """Check a candidate module really conforms to the capability contract.
 
     Imported in a subprocess so that a malformed module cannot take down the
@@ -512,13 +685,25 @@ def validate_capability_module(path: pathlib.Path, *, expected_name: str | None 
         "spec = importlib.util.spec_from_file_location('candidate', sys.argv[1])\n"
         "module = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(module)\n"
-        "cap = getattr(module, 'CAPABILITY', None)\n"
+        "cap = getattr(module, 'CAPABILITY', None) or {}\n"
         "handler = getattr(module, 'handle', None)\n"
+        "tools = cap.get('tools', []) or []\n"
         "out = {'cap': bool(cap), 'handler': callable(handler),\n"
-        "       'name': (cap or {}).get('name'),\n"
-        "       'tools': [t.get('name') for t in (cap or {}).get('tools', [])],\n"
-        "       'has_requirement': bool((cap or {}).get('requirement')),\n"
-        "       'descriptions': all(bool(t.get('description')) for t in (cap or {}).get('tools', []))}\n"
+        "       'name': cap.get('name'),\n"
+        "       'tools': [t.get('name') for t in tools],\n"
+        "       'declaration': {'name': cap.get('name'), 'description': cap.get('description'),\n"
+        "                       'requirement': cap.get('requirement'),\n"
+        "                       'limitations': cap.get('limitations'),\n"
+        "                       'dependencies': cap.get('dependencies') or [],\n"
+        "                       'permissions': cap.get('permissions') or [],\n"
+        "                       'tools': [{'name': t.get('name'),\n"
+        "                                  'description': t.get('description'),\n"
+        "                                  'parameters': t.get('parameters') or {},\n"
+        "                                  'side_effects': bool(t.get('side_effects', False))}\n"
+        "                                 for t in tools if isinstance(t, dict)]},\n"
+        "       'has_requirement': bool(cap.get('requirement')),\n"
+        "       'has_description': bool(cap.get('description')),\n"
+        "       'descriptions': all(bool(t.get('description')) for t in tools)}\n"
         "print(json.dumps(out))\n"
     )
     try:
@@ -527,37 +712,60 @@ def validate_capability_module(path: pathlib.Path, *, expected_name: str | None 
             capture_output=True, timeout=60, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"could not import candidate: {type(exc).__name__}: {exc}"
+        return False, f"could not import candidate: {type(exc).__name__}: {exc}", {}
     if completed.returncode != 0:
         return False, (
             f"candidate raised while importing: "
             f"{completed.stderr.decode(errors='replace')[-1500:]}"
-        )
+        ), {}
     try:
         info = json.loads(completed.stdout.decode().strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
-        return False, f"candidate import produced no parseable report: {completed.stdout[:300]!r}"
+        return False, f"candidate import produced no parseable report: {completed.stdout[:300]!r}", {}
 
+    declaration = dict(info.get("declaration") or {})
     if not info["cap"] or not info["handler"]:
-        return False, "module must define both CAPABILITY and a callable handle()"
+        return False, "module must define both CAPABILITY and a callable handle()", declaration
     if not info["has_requirement"]:
-        return False, "CAPABILITY must state the requirement it addresses"
+        return False, "CAPABILITY must state the requirement it addresses", declaration
     if not info["descriptions"]:
-        return False, "every declared tool needs a description the model can act on"
+        return False, "every declared tool needs a description the model can act on", declaration
     if expected_name and info["name"] != expected_name:
-        return False, f"CAPABILITY name {info['name']!r} does not match {expected_name!r}"
+        return False, (f"CAPABILITY name {info['name']!r} does not match {expected_name!r}",
+                       declaration)
     markers = placeholder_markers(path)
     if markers:
         return False, (
             f"module still contains scaffold placeholders: {', '.join(sorted(set(markers)))}"
-        )
+        ), declaration
     bad = [t for t in info["tools"] if not t or t.startswith("_")]
     if bad:
-        return False, f"tool names must be public identifiers; got {bad}"
-    return True, f"conforms; tools={info['tools']}"
+        return False, f"tool names must be public identifiers; got {bad}", declaration
+    return True, f"conforms; tools={info['tools']}", declaration
+
+
+def validate_capability_module(path: pathlib.Path, *, expected_name: str | None = None
+                               ) -> tuple[bool, str]:
+    """Check a candidate module conforms to the capability contract (ok, detail)."""
+
+    ok, detail, _declaration = _probe_capability_module(path, expected_name=expected_name)
+    return ok, detail
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _row_to_capability(row) -> Capability:
+    keys = set(row.keys())
     return Capability(
         name=row["name"], status=row["status"], requirement=row["requirement"],
         rationale=row["rationale"], implementation=row["implementation"], tests=row["tests"],
@@ -565,4 +773,12 @@ def _row_to_capability(row) -> Capability:
         reuse_analysis=row["reuse_analysis"], lines=row["lines"],
         created_at=row["created_at"], updated_at=row["updated_at"],
         promoted_at=row["promoted_at"], promoted_by=row["promoted_by"],
+        description=row["description"] if "description" in keys else None,
+        tools=_json_list(row["tools"]) if "tools" in keys else [],
+        dependencies=[str(d) for d in _json_list(row["dependencies"])] if "dependencies" in keys else [],
+        required_permissions=[str(d) for d in _json_list(row["required_permissions"])]
+        if "required_permissions" in keys else [],
+        implementation_ref=row["implementation_ref"] if "implementation_ref" in keys else None,
+        limitations=row["limitations"] if "limitations" in keys else None,
+        version=row["version"] if "version" in keys and row["version"] is not None else 1,
     )

@@ -26,6 +26,9 @@ import sqlite3
 import threading
 from typing import Any, Iterator, Sequence
 
+#: Bumped when the schema gains something an older database must be told about.
+SCHEMA_VERSION = "2"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -125,7 +128,14 @@ CREATE TABLE IF NOT EXISTS capability (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     promoted_at TEXT,
-    promoted_by TEXT
+    promoted_by TEXT,
+    description TEXT,
+    tools TEXT NOT NULL DEFAULT '[]',
+    dependencies TEXT NOT NULL DEFAULT '[]',
+    required_permissions TEXT NOT NULL DEFAULT '[]',
+    implementation_ref TEXT,
+    limitations TEXT,
+    version INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS context_report (
@@ -141,6 +151,59 @@ CREATE TABLE IF NOT EXISTS context_report (
     notes TEXT
 );
 CREATE INDEX IF NOT EXISTS context_report_task ON context_report(task_id, step);
+
+-- Learning-efficiency ledger: one row per finished task. Every field is a real
+-- measurement or an explicitly-labelled estimate; nothing here is inferred from a
+-- model's own account of what it did.
+CREATE TABLE IF NOT EXISTS ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    category TEXT,
+    objective_chars INTEGER,
+    tools_exposed INTEGER,
+    tools_available INTEGER,
+    capabilities_selected TEXT NOT NULL DEFAULT '[]',
+    memory_ids TEXT NOT NULL DEFAULT '[]',
+    capability_reused INTEGER NOT NULL DEFAULT 0,
+    new_development INTEGER NOT NULL DEFAULT 0,
+    experience_influenced INTEGER NOT NULL DEFAULT 0,
+    experience_evidence TEXT NOT NULL DEFAULT '{}',
+    model_calls INTEGER NOT NULL DEFAULT 0,
+    model_failures INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens_actual INTEGER,
+    completion_tokens_actual INTEGER,
+    usage_reported_calls INTEGER NOT NULL DEFAULT 0,
+    tokens_estimated INTEGER,
+    tools_executed INTEGER NOT NULL DEFAULT 0,
+    retries INTEGER NOT NULL DEFAULT 0,
+    denials INTEGER NOT NULL DEFAULT 0,
+    approvals_requested INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    route_decisions TEXT NOT NULL DEFAULT '[]',
+    verification_state TEXT,
+    status TEXT,
+    duration_ms INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ledger_task ON ledger(task_id);
+CREATE INDEX IF NOT EXISTS ledger_category ON ledger(category);
+
+-- Human authorization queue. A row exists only because the permission engine
+-- returned 'approval_required' for a concrete operation; only a human moves it to
+-- 'approved' or 'rejected', and only an approved row lets that same operation run.
+CREATE TABLE IF NOT EXISTS approval (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    tool TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by TEXT,
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS approval_status ON approval(status);
 
 CREATE TABLE IF NOT EXISTS guardian_baseline (
     path TEXT PRIMARY KEY,
@@ -189,13 +252,51 @@ class Store:
         cur.execute("PRAGMA busy_timeout=30000")
 
     def _migrate(self) -> None:
+        """Create what is missing, then add columns that older databases lack.
+
+        ``CREATE TABLE IF NOT EXISTS`` covers new tables but silently does nothing
+        for a table that already exists without a newer column, so every additive
+        column is checked explicitly. No column is ever dropped or rewritten: a
+        database from an earlier build keeps working and keeps its history.
+        """
+
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._add_missing_columns()
             self._conn.execute(
-                "INSERT INTO meta(key, value, updated_at) VALUES('schema_version', '1', ?) "
-                "ON CONFLICT(key) DO NOTHING",
-                (now(),),
+                # Only written when it actually changes, so opening the database twice
+                # leaves the row (and its timestamp) untouched.
+                "INSERT INTO meta(key, value, updated_at) VALUES('schema_version', ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                "updated_at=excluded.updated_at WHERE value IS NOT excluded.value",
+                (SCHEMA_VERSION, now()),
             )
+
+    #: Additive columns introduced after the first schema. (table, column, definition)
+    ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+        ("capability", "description", "TEXT"),
+        ("capability", "tools", "TEXT NOT NULL DEFAULT '[]'"),
+        ("capability", "dependencies", "TEXT NOT NULL DEFAULT '[]'"),
+        ("capability", "required_permissions", "TEXT NOT NULL DEFAULT '[]'"),
+        ("capability", "implementation_ref", "TEXT"),
+        ("capability", "limitations", "TEXT"),
+        ("capability", "version", "INTEGER NOT NULL DEFAULT 1"),
+        # Ledger columns added after the table's first definition: a database created
+        # in between has the table without them, so they must be added explicitly.
+        # (Found by running the migration against a database created minutes earlier.)
+        ("ledger", "usage_reported_calls", "INTEGER NOT NULL DEFAULT 0"),
+        ("ledger", "approvals_requested", "INTEGER NOT NULL DEFAULT 0"),
+        ("ledger", "experience_evidence", "TEXT NOT NULL DEFAULT '{}'"),
+    )
+
+    def _add_missing_columns(self) -> None:
+        for table, column, definition in self.ADDITIVE_COLUMNS:
+            existing = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if not existing:
+                continue  # table absent in this build; nothing to alter
+            if column in existing:
+                continue
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def close(self) -> None:
         with self._lock:

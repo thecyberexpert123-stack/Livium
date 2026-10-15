@@ -99,7 +99,7 @@ class Demonstrations:
 
         agent = LiviumAgent(Config.load(env=self.env()))
         agent.start()
-        agent.guardian.record_baseline(approved_by="demonstration setup")
+        agent.guardian.record_baseline(approved_by="demonstration setup", force=True)
 
         if probe.get("ok") and not probe.get("is_test_double"):
             from livium.models import build_client
@@ -108,7 +108,7 @@ class Demonstrations:
             print(f"real provider reachable: {probe['detail']}")
 
         scripted_agent = LiviumAgent(Config.load(env=self.env()), script=[
-            {"tool_calls": [{"name": "list_dir", "arguments": {"path": "README.md"}}]},
+            {"tool_calls": [{"name": "list_dir", "arguments": {"path": "."}}]},
             {"tool_calls": [{"name": "write_file", "arguments": {
                 "path": "summary.md",
                 "content": "# Summary\n\nThe repository documentation was inspected and captured.\n",
@@ -118,7 +118,7 @@ class Demonstrations:
                 "status": "complete"}}]},
         ])
         scripted_agent.start()
-        scripted_agent.guardian.record_baseline(approved_by="demonstration setup")
+        scripted_agent.guardian.record_baseline(approved_by="demonstration setup", force=True)
 
         print("\n(A1) Attempting the task through the configured real provider")
         if probe.get("ok") and not probe.get("is_test_double"):
@@ -355,7 +355,7 @@ class Demonstrations:
         cfg.ensure_dirs()
         agent = LiviumAgent(cfg)
         agent.start()
-        agent.guardian.record_baseline(approved_by="demonstration setup")
+        agent.guardian.record_baseline(approved_by="demonstration setup", force=True)
         ctx = ToolContext(task_id="demo-e", step=1, services=agent.services())
 
         for kind, text, key, verification in [

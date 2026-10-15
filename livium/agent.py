@@ -42,7 +42,13 @@ from .models import (
     build_client,
 )
 from .permissions import PermissionEngine
+from .ledger import Ledger, classify as classify_task, evidence_for_experience
 from .recovery import Recovery
+from .router import (
+    CHANGE_APPROACH, EXECUTE, INSPECT_RESULT, INVESTIGATE_FAILURE, INVESTIGATE_GAP,
+    PERSIST, REQUEST_AUTHORIZATION, RETRIEVE_CONTEXT, RETRY, SELECT_CAPABILITY, VERIFY,
+    StepContext, TaskRouter, classify_failure, mentions_gap, signature_of,
+)
 from .store import Store, now
 from .tools import ToolContext, ToolRegistry, ToolResult
 from .verification import Verifier, normalize_criteria, summarize
@@ -73,6 +79,9 @@ class TaskRun:
     generated_capabilities: list[str]
     error: str | None = None
     is_test_double: bool = False
+    route_decisions: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    approvals_requested: int = 0
+    ledger_id: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -104,7 +113,8 @@ class LiviumAgent:
         self.memory = Memory(self.store)
         self.guardian = GrowthGuardian(config, self.engine, self.store, self.memory)
         self.capabilities = CapabilityRegistry(
-            self.store, repo_root=_repo_root(), lab=config.paths.capability_lab
+            self.store, repo_root=_repo_root(), lab=config.paths.capability_lab,
+            promoted=config.paths.promoted,
         )
         self.runner = Runner(
             max_seconds=config.limits.max_command_seconds,
@@ -189,7 +199,20 @@ class LiviumAgent:
         loaded: list[str] = []
         failures: list[str] = []
         for spec, handler, capability_name in load_promoted(self.capabilities.promoted_dir):
-            self.tools.register_external(spec, handler)
+            # The catalog reports where a tool came from and how far the lifecycle got:
+            # a promoted capability is 'active' because its tests passed and a human
+            # approved it, and an unvalidated one can never be loaded at all.
+            # The registry's row may predate the interface columns; bring it up to date
+            # from the module that is actually loaded, so selection describes real code.
+            self.capabilities.sync_metadata(capability_name)
+            record = self.capabilities.get(capability_name)
+            decorated = dict(spec)
+            decorated.setdefault("source", f"capability:{capability_name}")
+            decorated.setdefault("validation",
+                                 f"capability:{record.status}" if record else "capability:unknown")
+            if record is not None and record.required_permissions:
+                decorated.setdefault("permissions", list(record.required_permissions))
+            self.tools.register_external(decorated, handler)
             loaded.append(spec["name"])
             if capability_name not in self.loaded_capabilities:
                 self.loaded_capabilities.append(capability_name)
@@ -204,6 +227,12 @@ class LiviumAgent:
             "capabilities": self.loaded_capabilities,
             "failures": failures,
         }
+
+    @property
+    def approvals(self) -> Any:
+        """The one approval queue this run uses (owned by the tool registry)."""
+
+        return self.tools.approvals
 
     def services(self) -> dict[str, Any]:
         """Live objects handed to tools. Promoted capabilities receive these."""
@@ -255,6 +284,25 @@ class LiviumAgent:
         nudged = False
         finished = False
         resume_report: dict[str, Any] | None = None
+        # -- router state: all of it observed, none of it assumed -------------
+        router = TaskRouter(max_retries_per_tool=self.config.limits.max_retries_per_tool)
+        route_decisions: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        retries: dict[str, int] = {}
+        denials_detail: list[dict[str, Any]] = []
+        investigated: list[str] = []
+        intents_inspected: list[str] = []
+        asked_for: list[str] = []
+        attempted: list[str] = []
+        exposed_last: list[str] = []
+        gap_evidence: dict[str, Any] | None = None
+        gap_investigation: dict[str, Any] | None = None
+        approvals_requested = 0
+        text_only_streak = 0
+        # Steps that actually ran to a model call, which is what the task rows, the
+        # context reports and TaskRun.steps all count. A terminal decision taken at the
+        # top of a step ends the run without executing that step.
+        steps_executed = 0
 
         self._open_task(task_id, objective, criteria)
         if resume:
@@ -267,7 +315,8 @@ class LiviumAgent:
         conversation = Conversation()
         step = 0
         try:
-            while step < self.config.limits.max_steps:
+            while True:
+                # --- stopping conditions: enforced here, not by the model -------
                 if self.guardian.frozen:
                     status = "blocked"
                     error = f"guardian froze the run: {self.guardian.frozen_reason}"
@@ -275,10 +324,14 @@ class LiviumAgent:
                     break
                 if time.monotonic() - started > self.config.limits.max_seconds:
                     status = "blocked"
-                    error = (
-                        f"wall-clock limit of {self.config.limits.max_seconds:g}s reached; the task "
-                        f"is unfinished"
-                    )
+                    error = (f"wall-clock limit of {self.config.limits.max_seconds:g}s reached; "
+                             f"the task is unfinished")
+                    observations.append(error)
+                    break
+                if step >= self.config.limits.max_steps and not finished:
+                    status = "blocked"
+                    error = (f"step limit of {self.config.limits.max_steps} reached without "
+                             f"finish_task; the task is unfinished")
                     observations.append(error)
                     break
 
@@ -289,18 +342,136 @@ class LiviumAgent:
                      "created_at": row["created_at"]}
                     for row in self.store.pending_intents(task_id)
                 ]
+
+                # --- 1. the router decides what this step is -------------------
+                candidates = self.capabilities.search(objective, limit=3)
+                decision = router.route(StepContext(
+                    task=task_row, step=step, max_steps=self.config.limits.max_steps,
+                    observations=observations, pending_intents=len(pending),
+                    pending_intent_ids=tuple(str(p["id"]) for p in pending),
+                    inspected_intent_ids=tuple(intents_inspected),
+                    denials=denials_detail, failures=failures, retries=retries,
+                    repeats=repeat_counts, attempted_tools=tuple(attempted),
+                    available_tools=self.tools.specs_names(), asked_for=tuple(asked_for),
+                    capability_candidates=candidates, gap_evidence=gap_evidence,
+                    finish_requested=finished, text_only_reply=text_only_streak > 0,
+                    frozen=self.guardian.frozen, freeze_reason=self.guardian.frozen_reason,
+                    max_retries_per_tool=self.config.limits.max_retries_per_tool,
+                    investigated_tools=tuple(investigated),
+                ))
+                route_decisions.append({"step": step, **decision.as_dict()})
+                self.store.append_event(
+                    "route_decision",
+                    {"step": step, "decision": decision.decision, "reason": decision.reason,
+                     "evidence": decision.evidence, "tools": list(decision.tool_names)},
+                    task_id=task_id,
+                )
+
+                # --- 2. decisions the harness carries out itself -----------------
+                #  A terminal decision ends the task; a prologue decision does work
+                #  before the model call this step still makes. Neither is allowed to
+                #  skip the model indefinitely, so no decision can spin the loop.
+                if decision.decision == PERSIST:
+                    status = "blocked"
+                    error = decision.reason
+                    observations.append(f"router: {decision.reason}")
+                    break
+
+                if decision.decision == VERIFY:
+                    observations.append(f"router: {decision.reason}")
+                    status = self._status_from_finish(status, final_summary)
+                    unresolved = [str(i) for i in
+                                  (decision.evidence.get("unresolved_intents") or [])]
+                    if unresolved and status == "complete":
+                        # The model says the task is done; the harness knows an operation
+                        # it recorded may never have happened. That is not "complete".
+                        status = "partial"
+                        unverified_note = (
+                            f"unconfirmed side effects remain (intent ids "
+                            f"{', '.join(unresolved)}); the task is closed as partial until "
+                            f"their real outcome is established"
+                        )
+                        observations.append(unverified_note)
+                    break
+
+                if decision.decision == REQUEST_AUTHORIZATION:
+                    status = "awaiting_approval"
+                    approval_id = self._last_approval_id(task_id) or "unknown"
+                    error = (
+                        f"{decision.reason}. A human must run `livium approvals --approve "
+                        f"{approval_id} --by <your name>`; the same operation then proceeds "
+                        f"exactly once."
+                    )
+                    observations.append(f"router: {decision.reason}")
+                    self._note_route_action(task_id, step, decision, {"approval_id": approval_id})
+                    break
+
+                if decision.decision == INSPECT_RESULT:
+                    report = self.recovery.inspect(task_id)
+                    observations.append(f"recovery inspection: {report.next_action}")
+                    findings = []
+                    for finding in report.findings:
+                        findings.append(f"intent {finding.intent_id} ({finding.tool}): "
+                                        f"{finding.determination} — {finding.detail}")
+                        # Remember that this one has been looked at, so an intent that
+                        # cannot be resolved is not inspected forever.
+                        if str(finding.intent_id) not in intents_inspected:
+                            intents_inspected.append(str(finding.intent_id))
+                    observations.extend(f"  {line}" for line in findings)
+                    self._note_route_action(task_id, step, decision,
+                                            {"findings": findings,
+                                             "next_action": report.next_action})
+
+                elif decision.decision == INVESTIGATE_GAP:
+                    gap_investigation = self._investigate_gap(
+                        task_id, objective, decision.evidence.get("gap") or {})
+                    observations.append("reuse ladder: " + gap_investigation["summary"])
+                    self._note_route_action(task_id, step, decision, {
+                        "summary": gap_investigation["summary"],
+                        "memory_id": gap_investigation["memory_id"]})
+
+                elif decision.decision == RETRIEVE_CONTEXT:
+                    widened = self._widen_retrieval(task_id, objective, observations)
+                    observations.append(f"router: {decision.reason}")
+                    if widened:
+                        observations.append("additionally retrieved: " + "; ".join(widened))
+                    self._note_route_action(task_id, step, decision,
+                                            {"records": len(widened)})
+
+                elif decision.decision == RETRY:
+                    tool_name = str(decision.evidence.get("tool"))
+                    retries[tool_name] = retries.get(tool_name, 0) + 1
+                    observations.append(
+                        f"router: retrying {tool_name} (attempt {retries[tool_name]} of "
+                        f"{self.config.limits.max_retries_per_tool}) after "
+                        f"{decision.evidence.get('classification')}")
+
+                elif decision.decision == INVESTIGATE_FAILURE:
+                    name = decision.evidence.get("tool")
+                    if name and name not in investigated:
+                        investigated.append(str(name))
+                    observations.append(f"router: {decision.reason}")
+
+                # --- 3. one model call, with the selected interfaces only -------
                 built = self.context.build(
                     task=task_row, step=step, observations=observations,
                     criteria_results=criteria_results, pending_intents=pending,
+                    route=decision.as_dict(),
+                    exposed_tools=decision.tool_names,
+                    tool_catalog=self.tools.catalog(),
                 )
                 context_reports.append(built.report)
+                steps_executed = step
                 if not conversation.messages:
                     conversation.system = built.system
                 conversation.add_user(built.prompt)
                 self._compact(conversation, built, observations)
 
-                self._step_begin(task_id, step, "model_call", f"objective: {objective[:120]}")
-                reply = self._call_model(conversation, built, observations)
+                exposed_last = list(decision.tool_names)
+                self._step_begin(task_id, step, "model_call",
+                                 f"{decision.decision}: {decision.reason[:120]}")
+                reply = self._call_model(conversation, built, observations,
+                                         tool_names=exposed_last, task_id=task_id)
                 model_calls += 1
                 if reply is None:
                     model_failures += 1
@@ -314,20 +485,20 @@ class LiviumAgent:
                     observations.append(f"model: {reply.text[:400]}")
 
                 if not reply.tool_calls:
-                    if not finished and not nudged:
-                        nudged = True
-                        conversation.add_user(
-                            "You produced no tool call. If the task is complete, call finish_task "
-                            "with an honest summary. Otherwise call a tool to make progress. Text "
-                            "alone is not an observation."
-                        )
-                        self._step_end(task_id, step, "complete", "text-only reply; nudged once")
-                        continue
-                    status = "partial"
-                    final_summary = reply.text or "(model returned no summary)"
-                    self._step_end(task_id, step, "complete", "text-only reply; loop ends")
-                    break
+                    text_only_streak += 1
+                    if text_only_streak >= 2:
+                        status = "partial"
+                        final_summary = reply.text or "(model returned no summary)"
+                        self._step_end(task_id, step, "complete",
+                                       "no tool call after a widened retrieval; loop ends")
+                        break
+                    nudged = True
+                    self._step_end(task_id, step, "complete",
+                                   "text-only reply; the router will widen retrieval")
+                    continue
 
+                text_only_streak = 0
+                abort: str | None = None
                 step_results: list[ToolResult] = []
                 for call in reply.tool_calls:
                     if tool_call_count >= self.config.limits.max_tool_calls:
@@ -337,17 +508,29 @@ class LiviumAgent:
                         break
                     if self.guardian.frozen:
                         break
-                    signature = f"{call.name}:{json.dumps(call.arguments, sort_keys=True)}"
+
+                    if call.name not in exposed_last and call.name not in asked_for:
+                        # The model asked for something the router did not put in front of
+                        # it. The tool layer still authorises it, and the interface is
+                        # carried on the next step; the fact is recorded, not hidden.
+                        asked_for.append(call.name)
+                        self.store.append_event(
+                            "tool_used_without_interface",
+                            {"tool": call.name, "exposed": exposed_last}, task_id=task_id,
+                        )
+
+                    signature = signature_of(call.name, call.arguments)
                     repeat_counts[signature] = repeat_counts.get(signature, 0) + 1
                     if repeat_counts[signature] >= 3:
-                        status = "blocked"
-                        error = (
-                            f"the same tool call was issued {repeat_counts[signature]} times with "
-                            f"identical arguments ({call.name}); repeating it is not making progress"
+                        abort = (
+                            f"the same tool call was issued {repeat_counts[signature]} times "
+                            f"with identical arguments ({call.name}); repeating it is not "
+                            f"making progress"
                         )
-                        observations.append(error)
                         self.store.append_event(
-                            "loop_detected", {"tool": call.name, "args": call.arguments},
+                            "loop_detected",
+                            {"tool": call.name, "arguments_digest": _digest(signature),
+                             "repeats": repeat_counts[signature]},
                             task_id=task_id,
                         )
                         break
@@ -359,12 +542,60 @@ class LiviumAgent:
                                     services=self.services()),
                     )
                     tool_call_count += 1
+                    attempted.append(call.name)
                     if result.denied:
                         denials += 1
+                        denials_detail.append({
+                            "tool": call.name,
+                            "reason": str(result.data.get("reason") or result.output)[:300],
+                            "approval_required": bool(result.data.get("approval_required")),
+                        })
+                        if result.data.get("approval_required"):
+                            approvals_requested += 1
+                    elif not result.ok:
+                        classification = classify_failure(
+                            call.name, result, known_tools=self.tools.specs_names())
+                        failures.append({
+                            "tool": call.name, "error": result.error,
+                            "output": result.output[:400], "classification": classification,
+                        })
+                        # The failure is evidence, so it goes in the journal where the
+                        # ledger and the viewer read it -- with a digest of the
+                        # arguments rather than the arguments themselves.
+                        self.store.append_event(
+                            "tool_failure",
+                            {"tool": call.name, "classification": classification,
+                             "error": str(result.error or "")[:300],
+                             "output": str(result.output or "")[:300],
+                             "arguments_digest": _digest(signature),
+                             "attempts": retries.get(call.name, 0)},
+                            task_id=task_id,
+                        )
+                        last_error = result.error
+                        if classification == "unknown_tool" or mentions_gap(result.output or ""):
+                            gap_evidence = {
+                                "tool": call.name, "classification": classification,
+                                "detail": result.output[:300],
+                            }
+                    else:
+                        # A success clears that tool's failure record: the router must not
+                        # keep reacting to a problem that is over.
+                        failures = [f for f in failures if f.get("tool") != call.name]
+                        if call.name == "request_capability":
+                            gap_evidence = {
+                                "tool": call.name,
+                                "proposal": result.data.get("name")
+                                or call.arguments.get("name"),
+                                "requirement": result.data.get("requirement")
+                                or call.arguments.get("requirement"),
+                                "detail": "the model proposed a capability for this requirement",
+                            }
+
                     self._post_tool_integrity(result.tool, task_id)
                     step_results.append(result)
                     conversation.add_tool_result(call, _tool_message(result))
                     observations.append(_observation_line(result))
+
                     if result.tool == "finish_task" and result.ok:
                         finished = True
                         final_summary = str(result.data.get("summary", ""))
@@ -372,25 +603,21 @@ class LiviumAgent:
                         status = {"complete": "complete", "partial": "partial",
                                   "blocked": "blocked", "failed": "failed"}.get(
                             str(result.data.get("status")), "partial")
+
                 self._step_end(
                     task_id, step,
-                    "complete" if not self.guardian.frozen else "failed",
-                    "; ".join(r.tool + ("(denied)" if r.denied else "") for r in step_results)
-                    or "no tool executed",
+                    "failed" if abort else ("complete" if not self.guardian.frozen else "failed"),
+                    abort or ("; ".join(r.tool + ("(denied)" if r.denied else "")
+                                        for r in step_results) or "no tool executed"),
                 )
+                if abort:
+                    status = "blocked"
+                    error = abort
+                    observations.append(abort)
+                    break
                 if on_step:
                     on_step({"step": step, "observations": observations[-3:],
                              "status": status if finished else "in_progress"})
-
-                if finished or status == "blocked":
-                    break
-            else:
-                status = "blocked"
-                error = (
-                    f"step limit of {self.config.limits.max_steps} reached without finish_task; "
-                    f"the task is unfinished"
-                )
-                observations.append(error)
 
             if self.guardian.frozen:
                 status = "blocked"
@@ -420,7 +647,7 @@ class LiviumAgent:
             ).strip()
 
         consequences = [c.as_dict() for c in self.guardian.consequences(task_id)]
-        self._close_task(task_id, status, final_summary, summary, step, error)
+        self._close_task(task_id, status, final_summary, summary, steps_executed, error)
         self._remember_outcome(task_id, objective, status, summary, observations, error,
                                denials=denials, resume_report=resume_report)
 
@@ -428,7 +655,7 @@ class LiviumAgent:
             task_id=task_id,
             objective=objective,
             status=status,
-            steps=step,
+            steps=steps_executed,
             model_calls=model_calls,
             model_failures=model_failures,
             tool_calls=tool_call_count,
@@ -451,21 +678,287 @@ class LiviumAgent:
         )
         self.store.append_event(
             "task_run_complete",
-            {"status": status, "steps": step, "model_calls": model_calls,
+            {"status": status, "steps": steps_executed, "model_calls": model_calls,
              "model_failures": model_failures,
              "tool_calls": tool_call_count, "denials": denials,
              "verification": summary, "error": error},
             task_id=task_id,
         )
+        run.route_decisions = route_decisions
+        run.approvals_requested = approvals_requested
+        try:
+            run.ledger_id = self._record_ledger(
+                run=run, objective=objective, route_decisions=route_decisions,
+                context_reports=context_reports, failures=failures, retries=retries,
+                denials=denials, approvals_requested=approvals_requested, started=started,
+            )
+        except Exception as exc:  # measurement must never take the task down
+            self.store.append_event(
+                "ledger_write_failed",
+                {"error": f"{type(exc).__name__}: {exc}"}, task_id=task_id,
+            )
         return run
+
+    # -- router support ----------------------------------------------------
+    def _note_route_action(self, task_id: str, step: int, decision,
+                           data: dict[str, Any]) -> None:
+        """Journal work the harness did *inside* a step, before the model call.
+
+        These actions do not consume a step: a step is one observation/decision/act
+        cycle ending in a model call or a terminal transition, which keeps the stored
+        step count comparable to the context reports and the task rows.
+        """
+
+        self.store.append_event(
+            "route_action",
+            {"step": step, "decision": decision.decision, "reason": decision.reason,
+             "detail": data},
+            task_id=task_id,
+        )
+
+    @staticmethod
+    def _status_from_finish(status: str, final_summary: str) -> str:
+        """The task status the harness will record, given the model's finish claim."""
+
+        # finish_task always records an explicit status; a finish request reaching the
+        # router any other way (a resumed task, a hand-edited row) is not evidence of
+        # completion, so the run is closed as 'partial' rather than 'complete'.
+        return "partial" if status == "in_progress" else status
+
+    def _last_approval_id(self, task_id: str) -> int | None:
+        rows = self.store.query(
+            "SELECT id FROM approval WHERE task_id=? AND status='pending' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        )
+        return int(rows[0]["id"]) if rows else None
+
+    def _widen_retrieval(self, task_id: str, objective: str,
+                         observations: Sequence[str]) -> list[str]:
+        """Retrieve more when the last step produced nothing usable.
+
+        Widening is bounded and named: the objective plus the most recent failure text
+        are searched, and if that yields nothing new the most recent records are listed
+        (the same question ``memory_recent`` answers). Whatever is added is reported so
+        the next prompt carries it, and the fact that retrieval was widened is journalled
+        rather than being an invisible second attempt.
+        """
+
+        terms = [objective]
+        terms.extend(obs for obs in observations[-4:] if "failed" in obs.lower()
+                     or "error" in obs.lower())
+        query = " ".join(terms)
+        added: list[str] = []
+        for record in self.memory.search(query, limit=6):
+            added.append(f"{record.kind}/{record.key or record.id}: {record.content[:160]}")
+        if not added:
+            for record in self.memory.recent(limit=5):
+                added.append(f"{record.kind}/{record.key or record.id}: {record.content[:160]}")
+        self.store.append_event(
+            "retrieval_widened", {"query_chars": len(query), "records": len(added)},
+            task_id=task_id,
+        )
+        return added
+
+    def _investigate_gap(self, task_id: str, objective: str,
+                         gap: dict[str, Any]) -> dict[str, Any]:
+        """Run the reuse ladder for a suspected capability gap, as a harness action.
+
+        The specification's ordering -- direct reuse, composition, extension, only then
+        new code -- is executed here before the model is allowed to treat the gap as real.
+        The ladder cannot prove that composition works; it names the candidates it found
+        and records them, so the next action is informed and the decision is auditable.
+        No capability is created by this method: proposing stays a model action and
+        promotion stays a human one.
+        """
+
+        # Running the ladder twice for the same objective must not produce two memories:
+        # the first answer stands until something about the situation changes.
+        key = f"gap:{abs(hash(objective)) % 10**8}"
+        existing = self.memory.by_key("decision", key)
+        if existing is not None:
+            return {"summary": existing.content, "rungs": {}, "memory_id": existing.id,
+                    "reused": True}
+
+        direct = self.capabilities.search(objective, limit=5)
+        unvalidated = self.capabilities.search(objective, limit=5, include_unvalidated=True)
+        tool_candidates = [name for name in
+                           (str(c.get("name")) for c in direct)
+                           if name in self.tools.specs_names()]
+        reusable_tools = sorted(set(tool_candidates) | {
+            name for name in self.tools.specs_names()
+            if name.split("_")[0] in objective.lower()
+        })
+        rungs = {
+            "direct_reuse": [c["name"] for c in direct],
+            "validated_tools": reusable_tools,
+            "composition_candidates": sorted(self.tools.specs_names()),
+            "near_miss_capabilities": [
+                {"name": c["name"], "status": c["status"], "matched": c["matched_terms"]}
+                for c in unvalidated if not c["validated"]
+            ],
+            "gap_signal": gap,
+        }
+        if direct:
+            summary = (
+                f"{len(direct)} validated capability(ies) already match "
+                f"({', '.join(c['name'] for c in direct)}); reuse before building"
+            )
+        elif rungs["near_miss_capabilities"]:
+            summary = (
+                "no validated capability matches; "
+                f"{len(rungs['near_miss_capabilities'])} unfinished candidate(s) exist "
+                "and could be extended rather than replaced"
+            )
+        else:
+            summary = (
+                "no registered capability matches, so the gap is real; the smallest "
+                "adequate implementation is the next step, with tests, and a human "
+                "promotes it"
+            )
+
+        record, _ = self.memory.remember(
+            "decision",
+            f"Capability gap ladder for '{objective[:90]}': {summary}",
+            key=key,
+            detail=json.dumps(rungs, default=str)[:1200],
+            tags=["gap", "reuse-ladder"],
+            confidence=0.7,
+            verification="executed",
+            evidence=f"reuse ladder executed for task {task_id}",
+            source="harness:router",
+            task_id=task_id,
+        )
+        self.store.append_event(
+            "gap_investigated",
+            {"task_id": task_id, "summary": summary, "rungs": rungs,
+             "memory_id": getattr(record, "id", None)},
+            task_id=task_id,
+        )
+        return {"summary": summary, "rungs": rungs,
+                "memory_id": getattr(record, "id", None)}
+
+    # -- ledger ------------------------------------------------------------
+    def _record_ledger(self, *, run: "TaskRun", objective: str, route_decisions: list[dict[str, Any]],
+                       context_reports: list[dict[str, Any]], failures: list[dict[str, Any]],
+                       retries: dict[str, int], denials: int, approvals_requested: int,
+                       started: float) -> int:
+        """Store one measured row for this task. Actual and estimated stay separate."""
+
+        replies = self.store.events(task_id=run.task_id, event_type="model_reply", limit=500)
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
+        reported = 0
+        for row in replies:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            usage = payload.get("usage") or {}
+            in_tokens = usage.get("prompt_tokens")
+            if in_tokens is None:
+                in_tokens = usage.get("input_tokens")
+            out_tokens = usage.get("completion_tokens")
+            if out_tokens is None:
+                out_tokens = usage.get("output_tokens")
+            if in_tokens is None and out_tokens is None:
+                continue
+            reported += 1
+            prompt_tokens = (prompt_tokens or 0) + int(in_tokens or 0)
+            completion_tokens = (completion_tokens or 0) + int(out_tokens or 0)
+
+        estimated = sum(int(r.get("tokens_estimated") or 0) for r in context_reports) or None
+        memory_ids: list[int] = []
+        for report in context_reports:
+            for record_id in report.get("memory_ids") or []:
+                if record_id not in memory_ids:
+                    memory_ids.append(int(record_id))
+
+        injected = [
+            {"id": row["id"], "kind": row["kind"], "key": row["key"],
+             "content": row["content"], "tags": json.loads(row["tags"] or "[]")}
+            for row in self.store.query(
+                f"SELECT id, kind, key, content, tags FROM memory "
+                f"WHERE id IN ({','.join('?' * len(memory_ids))})",
+                tuple(memory_ids),
+            )
+        ] if memory_ids else []
+
+        # What was reused is read from the journal of real tool calls, not from what
+        # the model said it used.
+        capability_tools = {
+            entry["name"] for entry in self.tools.catalog()
+            if str(entry.get("source", "")).startswith("capability:")
+        }
+        used_tools = self._tools_used(run.task_id)
+        executed_capability_tools = sorted(capability_tools & set(used_tools))
+        proposed = bool(self.store.query(
+            "SELECT 1 FROM event WHERE task_id=? AND type='capability_proposed' LIMIT 1",
+            (run.task_id,),
+        ))
+        influenced, experience_evidence = evidence_for_experience(
+            injected=injected,
+            tools_executed=used_tools,
+            failed_tools=[str(f.get("tool")) for f in failures],
+            route_decisions=route_decisions,
+        )
+        selected = sorted({
+            str(name) for decision in route_decisions
+            for name in (decision.get("evidence", {}).get("capability_candidates") or [])
+        })
+        reused = bool(executed_capability_tools)
+        return Ledger(self.store).record(
+            task_id=run.task_id,
+            category=classify_task(used_tools, run.criteria),
+            objective=objective,
+            tools_exposed=len(context_reports[-1].get("exposed_tools") or [])
+            if context_reports else 0,
+            tools_available=len(self.tools.specs_names()),
+            capabilities_selected=selected,
+            memory_ids=memory_ids,
+            capability_reused=reused,
+            new_development=proposed,
+            experience_influenced=influenced,
+            experience_evidence=experience_evidence,
+            model_calls=run.model_calls, model_failures=run.model_failures,
+            prompt_tokens_actual=prompt_tokens, completion_tokens_actual=completion_tokens,
+            usage_reported_calls=reported, tokens_estimated=estimated,
+            tools_executed=run.tool_calls,
+            retries=sum(retries.values()), denials=denials,
+            approvals_requested=approvals_requested,
+            failures=len(failures),
+            route_decisions=[{"step": d["step"], "decision": d["decision"]} for d in route_decisions],
+            verification_state=run.verification.get("state"), status=run.status,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+
+    def _tools_used(self, task_id: str) -> list[str]:
+        """Tool names this task actually invoked, from the journal (not from memory)."""
+
+        rows = self.store.query(
+            "SELECT payload FROM event WHERE task_id=? AND type='tool_call' ORDER BY id",
+            (task_id,),
+        )
+        names: list[str] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            name = payload.get("tool")
+            if name and name not in names:
+                names.append(str(name))
+        return names
 
     # -- model call -------------------------------------------------------
     def _call_model(
-        self, conversation: Conversation, built, observations: list[str]
+        self, conversation: Conversation, built, observations: list[str],
+        tool_names: Sequence[str] | None = None, task_id: str = "",
     ) -> Any:
         """One real completion, with an honest response to context rejection."""
 
-        tools = self.tools.specs()
+        tools = self.tools.specs_for(tool_names) if tool_names else self.tools.specs()
+        if tool_names and not tools:  # every selected name was unknown: never send none
+            tools = self.tools.specs()
         prompt_estimate = built.report["tokens_estimated"]
         for attempt in (1, 2):
             try:
@@ -496,11 +989,13 @@ class LiviumAgent:
                     f"model unavailable: {exc}. No completion was produced and none was "
                     f"invented; the task is blocked on this dependency."
                 )
-                self.store.append_event("model_unavailable", {"error": str(exc)})
+                self.store.append_event("model_unavailable", {"error": str(exc)},
+                                        task_id=task_id or None)
                 return None
             except ModelError as exc:
                 observations.append(f"model error: {exc}")
-                self.store.append_event("model_error", {"error": str(exc)})
+                self.store.append_event("model_error", {"error": str(exc)},
+                                        task_id=task_id or None)
                 return None
 
             self.store.append_event(
@@ -512,6 +1007,9 @@ class LiviumAgent:
                     "text": reply.text[:2000], "is_test_double": reply.is_test_double,
                     "context_estimated_tokens": prompt_estimate,
                 },
+                # The task id belongs on this row: the learning ledger reads usage from
+                # here, and an unattributed token count cannot be attributed afterwards.
+                task_id=task_id or None,
             )
             self._calibrate(prompt_estimate, reply.usage)
             return reply
@@ -788,6 +1286,14 @@ class LiviumAgent:
             "permissions": self.engine.describe(),
             "probe": self._probe,
         }
+
+
+def _digest(value: str) -> str:
+    """A stable short digest, for journals that must not store what the model wrote."""
+
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def _repo_root():

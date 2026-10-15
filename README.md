@@ -49,8 +49,9 @@ Livium's agent runtime needs a model to drive it. Everything *around* the model 
 independently runnable and testable:
 
 ```bash
-python3 -m unittest discover -s tests -t tests     # 211 tests, ~17s, no network
+python3 -m unittest discover -s tests -t tests      # 289 tests, ~23s, no network
 python3 demos/run_demonstrations.py                 # the six mandatory demonstrations
+python3 demos/run_mission_demos.py --approve-as "Your Name"   # the six mission demonstrations
 ```
 
 ---
@@ -94,6 +95,11 @@ in, so demonstration A is recorded as blocked-by-environment (see
 | **Verification** | acceptance criteria are executed by the harness; `livium events --type task_verified` |
 | **Capability lifecycle** | `livium capability list/test/promote/rollback`; demonstrations E and F |
 | **Guardian integrity** | `livium guardian status`; tamper tests in `tests/test_guardian.py` |
+| **Step routing** | `livium events --type route_decision`; `tests/test_router.py` |
+| **Selective exposure** | `livium status` context reports list the interfaces sent per step — 5 to 7 of 13 in the recorded mission run |
+| **Approval boundary** | `livium approvals --pending` then `--approve <id> --by "Your Name"`; the operation runs once, and only after the decision |
+| **Token accounting** | `livium status` ledger rows: `prompt_tokens_actual` is `NULL` unless the provider reported usage; the estimate is a separate column |
+| **Mission acceptance tests** | `python3 -m unittest discover -s tests -t tests -p "test_mission.py"` |
 | **Network isolation** | `livium doctor` reports the mechanism it *verified*, not the one it hoped for |
 
 ## Commands
@@ -107,8 +113,9 @@ livium events [--type T]          read the append-only journal
 livium memory search "query"      ranked full-text retrieval with provenance and trust
 livium memory list|history|duplicates|consolidate|stale
 livium capability list|show|propose|scaffold|test|promote|rollback|reject
+livium approvals [--pending] [--history] | --approve ID --by NAME | --reject ID --by NAME
 livium guardian status|baseline --approved-by NAME|propose-change …
-livium selftest                   run the repository test suite
+livium selftest [--record]        run the repository test suite; --record feeds `livium report`
 livium serve [--port 8787]        HTTP API + live viewer
 ```
 
@@ -128,6 +135,10 @@ truth). The important ones:
 | `LIVIUM_DENIED_BINARIES` | larger list | shells, `rm`, `curl`, `pip`, `sudo`, … |
 | `LIVIUM_NETWORK_ALLOWLIST` | empty | hosts the agent may reach; empty means none |
 | `LIVIUM_MAX_STEPS` / `LIVIUM_MAX_TOOL_CALLS` / `LIVIUM_MAX_SECONDS` | 12 / 40 / 900 | loop stopping conditions |
+| `LIVIUM_MAX_RETRIES_PER_TOOL` | 2 | how often one recoverable operation may be retried before the router changes approach |
+| `LIVIUM_PROMOTED_DIR` | `livium/promoted` | where promoted capabilities are installed; relative paths resolve under `LIVIUM_HOME` |
+| `LIVIUM_APPROVAL_WRITE_ROOTS` | empty | paths the agent may write **only after a human approves** that specific call |
+| `LIVIUM_APPROVAL_BINARIES` | empty | programs the agent may run only after a human approves that specific call |
 
 Run `python3 -m livium doctor --json` for the complete effective configuration.
 
@@ -143,11 +154,15 @@ Run `python3 -m livium doctor --json` for the complete effective configuration.
 - `.env.example` — every supported setting, checked against the code by a test
 - `docs/evidence/` — recorded output of the demonstrations and the final report
 - `demos/run_demonstrations.py` — re-runs all six demonstrations from a fresh clone
+- `demos/run_mission_demos.py` — the six mission demonstrations (retrieval, discovery,
+  recovery that changes the next action, resume, reuse, token accounting)
 
 ## Honest status
 
 Implemented and verified: task loop, tools, permissions, memory, context, recovery,
-verification, capability lifecycle, guardian controls, viewer, HTTP API, 211 automated tests.
+verification, capability lifecycle, guardian controls, viewer, HTTP API, 289 automated
+tests, deterministic step routing, selective tool exposure, the per-task learning
+ledger, and human-approved operations that run exactly once per decision.
 
 Implemented but **not verified here**: live inference against a real provider
 (no reachable endpoint in the build environment). The HTTP clients are real,

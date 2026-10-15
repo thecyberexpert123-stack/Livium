@@ -35,7 +35,7 @@ from typing import Any
 
 from .config import Config
 from .memory import Memory
-from .permissions import PermissionEngine
+from .permissions import UNATTRIBUTED_NAMES, PermissionEngine
 from .store import Store, now
 
 
@@ -105,16 +105,34 @@ class GrowthGuardian:
         self._baseline_digests = {row["path"]: row["sha256"] for row in rows}
         return dict(self._baseline_digests)
 
-    def record_baseline(self, *, approved_by: str) -> dict[str, Any]:
-        """Trusted operation. Called from the CLI by a human, never by the agent."""
+    def record_baseline(self, *, approved_by: str, force: bool = False) -> dict[str, Any]:
+        """Trusted operation. Called from the CLI by a human, never by the agent.
 
-        if not approved_by or approved_by.strip().lower() in ("agent", "livium", "self", "auto"):
+        Replacing an existing baseline is the one action that turns a detected change
+        into a trusted one, so it does not happen by accident: an existing baseline is
+        overwritten only when the caller says so explicitly, and the digests being
+        replaced are kept in the journal. The agent has no path to this method -- the
+        permission engine refuses it the CLI, and the tool registry does not expose it.
+        """
+
+        if not approved_by or approved_by.strip().lower() in UNATTRIBUTED_NAMES:
             raise PermissionError(
                 "re-baselining the guardian requires an explicit human approver name"
             )
         files = self.protected_files()
         if not files:
             raise PermissionError("no protected files found to baseline; refusing to record an empty baseline")
+        replaced = dict(self._baseline_digests)
+        if replaced and not force:
+            changed = sorted(path for path, digest in replaced.items()
+                             if digest != self._digest(pathlib.Path(path)))
+            raise PermissionError(
+                "a baseline is already recorded"
+                + (f" and {len(changed)} protected file(s) differ from it: "
+                   f"{', '.join(changed)}" if changed else "")
+                + ". Re-record it deliberately with force=True (CLI: --force) -- this "
+                  "replaces the digests that tamper detection is comparing against."
+            )
         with self.store.transaction() as conn:
             for path in files:
                 conn.execute(
@@ -125,10 +143,12 @@ class GrowthGuardian:
                 )
         self.store.append_event(
             "guardian_rebaselined",
-            {"approved_by": approved_by, "files": [str(p) for p in files]},
+            {"approved_by": approved_by, "files": [str(p) for p in files],
+             "forced": bool(force), "replaced_digests": replaced},
         )
         self.load_baseline()
-        return {"baseline_files": len(files), "approved_by": approved_by}
+        return {"baseline_files": len(files), "approved_by": approved_by,
+                "forced": bool(force), "replaced": len(replaced)}
 
     def integrity(self) -> IntegrityReport:
         files = self.protected_files()
