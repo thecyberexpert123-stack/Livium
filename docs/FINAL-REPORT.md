@@ -1,5 +1,5 @@
 AGENT LIVIUM — FINAL REPORT
-generated 2026-10-15T08:54:45+0000
+generated 2026-10-15T09:06:51+0000
 repository /home/user/Livium
 home /tmp/livium-release-m3
 provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.openai.com/v1 is unreachable at https://api.openai.com/v1: TLS/SSL connection has been closed (EOF) (_ssl.c:992). Check network egress and LIVIUM_BASE_URL.)
@@ -17,22 +17,22 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
     `python3 demos/run_demonstrations.py` — the six mandatory demonstrations, re-runnable from a fresh clone.
 
  3. WHAT IS VERIFIED, AND HOW
-    339 test methods across 21 modules; each asserts observed behaviour against real storage and real subprocesses.
-    Last recorded full-suite run: 339 tests, exit code 0 (0 min old).
-    Journal: 384 events, 2 observed boundary violation(s), 0 refused git operation(s), 15 real provider probe(s).
+    353 test methods across 21 modules; each asserts observed behaviour against real storage and real subprocesses.
+    Last recorded full-suite run: no recorded run in this home — run `livium selftest --record`.
+    Journal: 381 events, 2 observed boundary violation(s), 0 refused git operation(s), 14 real provider probe(s).
     Mission acceptance tests: A retrieval, B budgeting, C capability discovery, D feedback recovery, E cross-process reuse, F genuine growth, G token accounting, H permission enforcement — test_approval 17, test_hygiene 4, test_ledger 13, test_mission 18, test_router 24 test(s), all passing in the recorded run.
     Configured boundary: 20 allowed binaries, 52 denied, 0 allowed network host(s).
 
  4. THE SIX MANDATORY DEMONSTRATIONS
-    Recorded outcomes: A1 real provider task execution = blocked by environment; A2 orchestration task via scripted test double = verified; B memory across process restart = verified; C context construction = verified; D recovery after interruption = verified; F rejection and repair = verified; E capability growth = verified (31 min old)
-    Recorded demonstration run: 31 min old
+    Recorded outcomes: A1 real provider task execution = blocked by environment; A2 orchestration task via scripted test double = verified; B memory across process restart = verified; C context construction = verified; D recovery after interruption = verified; F rejection and repair = verified; E capability growth = verified (44 min old)
+    Recorded demonstration run: 44 min old
     A — real task execution: attempts the configured provider, and reports blocked-by-environment with the exact error when it is unreachable; the same task through the scripted double is labelled as such and never counted as model proof.
     B — memory survives process death: a separate writer process exits, a later reader process retrieves the record, and the CLI search agrees.
     C — context management: the relevant record is included, the irrelevant noise is excluded, and the budget and omissions are recorded in `context_report`.
     D — recovery: an interrupted write is confirmed from the real file (size, sha256) rather than assumed, and the report says which facts remain unknown.
     E — genuine capability growth: the gap was measured (memory_search returns nothing for a recency question while records exist), then proposed, implemented, tested, promoted by a named human, and used by a fresh agent.
     F — controlled rejection: a deliberately broken change fails its tests, promotion is refused, and the repaired change passes.
-    Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified; M7 deferred discovery = verified; M8 queue workflow = verified; M9 integrity response = verified (1 min old)
+    Mission demonstrations (sections 12): M1 selective retrieval = verified; M2 capability discovery = verified; M3 failure changes the next action = verified; M4 resume after interruption = verified; M5 experience reuse across processes = verified; M6 token accounting = verified; M7 deferred discovery = verified; M8 queue workflow = verified; M9 integrity response = verified; M10 follow-up budget = verified (0 min old)
 
  5. PERSISTENT MEMORY
     59 record(s) live in SQLite; kinds: {'capability': 1, 'decision': 1, 'experience': 37, 'failure': 4, 'foundational': 3, 'task': 9}; verification states: {'unverified': 34, 'verified': 21}.
@@ -57,8 +57,8 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
     Only a human promotes: `--approved-by` is required, the guardian gate runs, and the module is installed into `livium/promoted/` where it loads at the next startup.
 
  9. GROWTH GUARDIAN AND COMPLEXITY CONTROL
-    Guardian integrity: tampered — protected files differ from the recorded baseline: /home/user/Livium/livium/integrity.py. These files encode Livium's permissions and instructions; a change to them must be deliberate and human-approved.
-    Protected paths checked: 12; mismatches: 1; missing baselines: 0.
+    Guardian integrity: ok — 12 protected file(s) match the recorded baseline
+    Protected paths checked: 12; mismatches: 0; missing baselines: 0.
     The agent cannot write protected paths, cannot re-baseline, and cannot promote while the guardian is frozen; those are refusals in the permission engine, not conventions.
     Complexity control is applied by deletion: unreachable branches, unused parameters, unused imports and dead API surface were removed rather than kept 'in case'.
 
@@ -91,7 +91,7 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
 
 14. DEFERRED DISCOVERY: WHAT WAS NOTICED BUT NOT CHASED
     Queue: completed 1, investigating 1; 0 record(s) were filed past the chain limit (shape: 2) instead of being queued.
-    Capture is measured, not reported: the ledger holds 1 captured observation(s) attributed to tasks and 1 item(s) investigated.
+    Capture is measured, not reported: the ledger holds 1 captured observation(s) attributed to tasks, 1 item(s) investigated to a conclusion, and 0 investigation(s) a budget stopped before it concluded -- kept, not counted as done.
     Follow-up cycles completed here: 1, having spent 2 model call(s), 2 step(s) and 0 token(s) that the transport reported; 0 cycle(s) stopped inside their budget, leaving the rest of the queue ready and the reason journalled.
     An investigation is a real task: its own task id, its own tools and permissions, its own acceptance criterion (it must have touched real state) and its own verification. The conclusion it reaches is stored as the task's claim, labelled as such, next to the evidence the harness verified.
     Not claimed: the ranking is lexical (confidence, evidence, risk, effort) and does not learn from outcomes, and a near-duplicate observation can be merged into an earlier record. Both are stated in docs/LIMITATIONS.md.

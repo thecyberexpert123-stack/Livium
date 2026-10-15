@@ -176,7 +176,36 @@ Provenance is part of the record, not a comment on it. Text read out of a file i
 as `observed_content` and flagged; it can be evaluated, and it can never be mistaken for
 an instruction the agent gave itself.
 
-### Integrity: a detection is a record, a recovery is verified
+### The follow-up budget: charged by the work, not reported about it
+
+A budget that is checked between items is a budget that describes the last item, not one
+that bounds the next. So the counters live on `FollowUpBudget` and the work charges them:
+
+```
+FollowUpCycle.run(...)                      # owns max_items and the deadline
+  └── runner(record, budget)                # one investigation
+        ├── budget.spend("steps", 1)        #   before each command it executes
+        └── agent.run_task(..., spend=budget.spend)
+              ├── budget.spend("steps", 1)        # before each loop step
+              └── agent._call_model(..., spend=budget.spend)
+                    ├── budget.spend("model_calls", 1)   # before each provider attempt
+                    └── budget.spend("tokens", reported) # after the reply, from its usage
+```
+
+`spend()` raises `BudgetExhausted` instead of returning `False`, because the caller is about
+to do something with a cost and a return value is easy to ignore. The exception carries the
+limit's name, and the loop turns it into a clean stop: the task keeps everything it did,
+records `task_stopped`, and `TaskRun.stopped_because` says which limit ended it. The cycle
+then returns the item to `ready`, journals `discovery_investigation_stopped`, and stops.
+
+Two rules keep this from becoming a second execution path. Nothing charges a task that did
+not come from a cycle: the default callback is `no_spend`, so an ordinary task cannot be
+refused by a budget it does not have. And a stop is never reported as an outcome: an
+investigation that ran out of budget did not conclude, so the record stays `ready`, the
+ledger counts it in `followups_stopped` rather than `followups_investigated`, and the
+report prints both numbers next to the queue's own statuses.
+
+## Integrity: a detection is a record, a recovery is verified
 
 The guardian's job is to notice that a protected component changed. `livium.integrity`
 is what happens next, and its first rule is that noticing is not enough: a detection

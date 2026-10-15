@@ -362,6 +362,30 @@ pass. The refusal was correct: the demo had asked for the wrong thing.
 step. Three separate demos now *expect* a refusal and assert its reason. A demonstration
 that only ever shows the happy path is a brochure.
 
+## 31. A budget that is checked between items is a report, not a limit
+
+**What happened.** The follow-up cycle enforced `max_model_calls` before starting each item
+and totalled the spend from what the runner returned afterwards. A single investigation could
+therefore make as many calls as it liked: the cycle only looked again once it was over. The
+numbers were then assembled from three separate tallies -- the cycle's totals, the runner's
+reported spend, and the ledger's own count -- and they disagreed in exactly the case that
+mattered: an investigation the budget stopped had left the record `ready` while the ledger
+counted it as investigated.
+
+**What changed.** The counters moved onto `FollowUpBudget` itself, and the work charges them
+before it happens: a model call, a step, a command execution, plus a deadline that refuses
+work once the cycle's time is up. A refusal raises, the item goes back to `ready`, and the
+limit's name goes on the record in one spelling. The ledger gained a column, because counting
+an attempt and counting a conclusion in one number makes the ledger disagree with the record
+it describes.
+
+**Two things were learned from the tests, not from the code.** A limit of N allows N units
+and refuses the N+1st, so a test for the stop has to supply one more turn than the limit --
+the first version of the test failed because the script ran out of replies before the budget
+ran out of room. And a demonstration that shares its workspace with earlier demonstrations is
+not measuring its own budget: the first M10 run spent *their* queued items and reported 24
+model calls under a two-call limit.
+
 ---
 
 ## Rules derived from these lessons
@@ -398,3 +422,9 @@ form of the above, and `AGENTS.md` carries them into the workspace:
     compare it to the real thing, or it will describe a version that no longer exists.
 16. A tool that can reach underneath the guards is a bypass, however convenient the
     path: route effects through the layer that checks them.
+17. Charge the limit where the spending happens, before it happens, and raise when it is
+    reached. A limit checked after the fact is a description of the past.
+18. Count an attempt and a conclusion separately. One number that covers both will
+    eventually be read as the more flattering of the two.
+19. When a stop is journalled, name it with the same sentence everywhere: two names for
+    one limit read as two limits.

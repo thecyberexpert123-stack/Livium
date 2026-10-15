@@ -27,7 +27,7 @@ import threading
 from typing import Any, Iterator, Sequence
 
 #: Bumped when the schema gains something an older database must be told about.
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -379,6 +379,10 @@ class Store:
         ("discovery", "touches_protected", "TEXT NOT NULL DEFAULT '[]'"),
         ("ledger", "discoveries_captured", "INTEGER NOT NULL DEFAULT 0"),
         ("ledger", "followups_investigated", "INTEGER NOT NULL DEFAULT 0"),
+        # Added when the follow-up budget started refusing charges mid-investigation:
+        # an attempt that the budget stopped is not a conclusion, and counting the two
+        # in one column made the ledger disagree with the record it was describing.
+        ("ledger", "followups_stopped", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     def _add_missing_columns(self) -> None:

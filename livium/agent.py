@@ -47,8 +47,8 @@ from .permissions import PermissionEngine
 from .ledger import Ledger, classify as classify_task, evidence_for_experience
 from .recovery import Recovery
 from .discovery import (
-    BLOCKED, COMPLETED, FollowUpBudget, FollowUpCycle, INVESTIGATING, POSTPONED,
-    READY, REJECTED, DiscoveryQueue,
+    BLOCKED, COMPLETED, BudgetExhausted, FollowUpBudget, FollowUpCycle, INVESTIGATING,
+    POSTPONED, READY, REJECTED, DiscoveryQueue, no_spend,
 )
 from .router import (
     CHANGE_APPROACH, EVALUATE_DISCOVERIES, EXECUTE, INSPECT_RESULT, INVESTIGATE_FAILURE,
@@ -86,6 +86,9 @@ class TaskRun:
     generated_capabilities: list[str]
     error: str | None = None
     is_test_double: bool = False
+    #: The limit that stopped this run, when it was stopped by a budget rather than by
+    #: finishing. Empty for every ordinary task: nothing charges them.
+    stopped_because: str = ""
     route_decisions: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     approvals_requested: int = 0
     ledger_id: int | None = None
@@ -240,6 +243,9 @@ class LiviumAgent:
         evidence: list[str] = []
         status = READY
         disposition = "unchanged"
+        # A reading of the one counter this item shares with the cycle. What the item
+        # spent is the difference between two readings, not a second count kept here.
+        before = dict(budget.spent)
 
         # 1. Does the thing the observation refers to still exist as described?
         listed = dict(discovery.source_evidence or {})
@@ -258,6 +264,13 @@ class LiviumAgent:
             disposition = "stale"
             notes.append("none of the named files exist any more")
         for command in list(listed.get("commands") or [])[:2]:
+            try:
+                # Executing a command is real work and is charged like any other step,
+                # before it happens. A refusal here is not a failure of the evaluation:
+                # the queue keeps the item and a later cycle resumes it.
+                budget.spend("steps", 1)
+            except BudgetExhausted as exc:
+                return self._stopped(exc, budget, before, evidence, task_id)
             # Through the tool registry, never through the runner directly: a command
             # that came from an observation is checked by the same permission engine,
             # journalled in the same place and followed by the same integrity check as
@@ -322,7 +335,7 @@ class LiviumAgent:
         #    run one, inside this cycle's budget, and let its verified outcome decide.
         if disposition == "unchanged":
             return self._investigate(discovery, budget, evidence=evidence, notes=notes,
-                                     task_id=task_id)
+                                     task_id=task_id, before=before)
 
         # 5. Anything noticed *while evaluating this* is queued, not chased.
         self.store.append_event(
@@ -335,11 +348,44 @@ class LiviumAgent:
             "status": status,
             "reason": reason[:1500],
             "evidence": "; ".join(evidence)[:1500],
-            "spent": budget.as_dict(),
+            "spent": self._spend_since(budget, before),
         }
 
+    @staticmethod
+    def _spend_since(budget: FollowUpBudget, before: dict[str, float]) -> dict[str, Any]:
+        """What one item spent: the difference between two readings of one counter."""
+
+        spent = budget.spent
+        return {
+            "model_calls": int(spent.get("model_calls", 0) - before.get("model_calls", 0)),
+            "steps": int(spent.get("steps", 0) - before.get("steps", 0)),
+            "tokens": int(spent.get("tokens", 0) - before.get("tokens", 0)),
+            "tokens_measured": budget.tokens_are_measured,
+        }
+
+    def _stopped(self, exc: BudgetExhausted, budget: FollowUpBudget,
+                 before: dict[str, float], evidence: list[str],
+                 task_id: str | None) -> dict[str, Any]:
+        """An evaluation that the budget stopped before it could conclude anything.
+
+        The outcome says so rather than claiming a status the evaluation did not reach,
+        and the spent total still counts what it did spend. The cycle reads
+        ``stopped_because`` and leaves the record ready for a later cycle.
+        """
+
+        note = f"not evaluated: {exc.reason}"
+        self.store.append_event(
+            "discovery_evaluation_stopped",
+            {"reason": exc.reason, "kind": exc.kind, "limit": exc.limit,
+             "evidence": evidence[:6]},
+            task_id=task_id,
+        )
+        return {"status": READY, "reason": note, "evidence": "; ".join(evidence)[:1500],
+                "spent": self._spend_since(budget, before), "stopped_because": exc.reason}
+
     def _investigate(self, discovery, budget: FollowUpBudget, *, evidence: list[str],
-                     notes: list[str], task_id: str | None) -> dict[str, Any]:
+                     notes: list[str], task_id: str | None,
+                     before: dict[str, float]) -> dict[str, Any]:
         """Run the follow-up as a real task and report what it actually established.
 
         The criterion is deliberately modest: the investigation must have *touched real
@@ -366,19 +412,37 @@ class LiviumAgent:
             evaluate_discoveries=False,
             followup_depth=discovery.depth + 1,
             followup_parent=discovery.id,
+            # The investigation runs on the cycle's own budget. Its model calls and its
+            # steps are charged to the same counters the cycle checks between items,
+            # which is what stops a single investigation from spending the whole cycle.
+            spend=budget.spend,
         )
         used = self._tools_used(outcome.task_id)
         prompt_tokens, completion_tokens, reported = self._tokens_for(outcome.task_id)
-        spent = {
-            "model_calls": outcome.model_calls, "steps": outcome.steps,
-            "tokens": (prompt_tokens or 0) + (completion_tokens or 0),
-            "tokens_measured": bool(reported),
-        }
+        spent = self._spend_since(budget, before)
         detail = "; ".join(outcome.criteria_results[i]["detail"]
                            for i in range(len(outcome.criteria_results)))[:400]
         evidence_text = (f"task {outcome.task_id}: tools executed {', '.join(used) or 'none'}; "
-                         f"verification {outcome.verification.get('state')}; checks: {detail}"
-                         )[:1500]
+                         f"verification {outcome.verification.get('state')}; "
+                         f"tools/verification: {outcome.status}"
+                         + (f"; stopped: {outcome.stopped_because}"
+                            if outcome.stopped_because else "")
+                         + f"; checks: {detail}")[:1500]
+        if outcome.stopped_because:
+            # The investigation did not reach a conclusion, so nothing about the
+            # observation is claimed: the item goes back to ready and the limit that
+            # stopped it is named on the record.
+            self.store.append_event(
+                "discovery_investigation_stopped",
+                {"discovery_id": discovery.id, "task_id": outcome.task_id,
+                 "reason": outcome.stopped_because, "spent": spent},
+                task_id=task_id,
+            )
+            return {"status": READY,
+                    "reason": (f"the investigation ran out of budget: "
+                               f"{outcome.stopped_because}")[:1200],
+                    "evidence": evidence_text, "spent": spent,
+                    "stopped_because": outcome.stopped_because}
         if outcome.status == "complete" and outcome.verification.get("state") == "verified":
             return {
                 "status": COMPLETED,
@@ -597,6 +661,7 @@ class LiviumAgent:
         evaluate_discoveries: bool = True,
         followup_depth: int = 0,
         followup_parent: int | None = None,
+        spend: Callable[[str, float], bool] = no_spend,
     ) -> TaskRun:
         started = time.monotonic()
         criteria = normalize_criteria(acceptance)
@@ -641,6 +706,10 @@ class LiviumAgent:
         self._followup_depth = followup_depth
         self._followup_parent = followup_parent
         criteria_satisfied = False
+        #: Named when a budget refused work. A stop is not a failure of the task: the
+        #: task did not get to finish, and the caller has to be able to tell the two
+        #: apart, because one is retried later and the other is a bug.
+        stopped_because = ""
         self._criteria_cache: dict[str, tuple[list[Any], dict[str, Any]]] = {}
         # Steps that actually ran to a model call, which is what the task rows, the
         # context reports and TaskRun.steps all count. A terminal decision taken at the
@@ -853,8 +922,14 @@ class LiviumAgent:
                 exposed_last = list(decision.tool_names)
                 self._step_begin(task_id, step, "model_call",
                                  f"{decision.decision}: {decision.reason[:120]}")
+                # The step and the call are charged *before* they happen, through the
+                # callback the caller supplied. An ordinary task gets the no-op and
+                # notices nothing; a follow-up task gets its cycle's budget, so the
+                # loop cannot spend past the limit and report it afterwards.
+                spend("steps", 1)
                 reply = self._call_model(conversation, built, observations,
-                                         tool_names=exposed_last, task_id=task_id)
+                                         tool_names=exposed_last, task_id=task_id,
+                                         spend=spend)
                 model_calls += 1
                 if reply is None:
                     model_failures += 1
@@ -1007,6 +1082,21 @@ class LiviumAgent:
                 status = "blocked"
                 error = f"guardian froze the run: {self.guardian.frozen_reason}"
 
+        except BudgetExhausted as exc:
+            # A budget refused the next unit of work. The task stops where it is, keeps
+            # everything it did, and reports the limit's own name; the caller decides
+            # whether that is a postponement (a follow-up) or an incomplete task.
+            status = "partial"
+            stopped_because = exc.reason
+            error = exc.reason
+            observations.append(f"stopped before spending more: {exc.reason}")
+            self.store.append_event(
+                "task_stopped",
+                {"reason": exc.reason, "kind": exc.kind, "limit": exc.limit,
+                 "spent": exc.spent, "step": steps_executed},
+                task_id=task_id,
+            )
+            self._step_end(task_id, step, "stopped", exc.reason)
         except Exception as exc:  # a loop bug must surface as a failed task, not a crash
             status = "failed"
             error = f"{type(exc).__name__}: {exc}"
@@ -1058,13 +1148,15 @@ class LiviumAgent:
             generated_capabilities=self._capabilities_touched(task_id),
             error=error,
             is_test_double=self.client.is_test_double,
+            stopped_because=stopped_because,
         )
         self.store.append_event(
             "task_run_complete",
             {"status": status, "steps": steps_executed, "model_calls": model_calls,
              "model_failures": model_failures,
              "tool_calls": tool_call_count, "denials": denials,
-             "verification": summary, "error": error},
+             "verification": summary, "error": error,
+             "stopped_because": stopped_because},
             task_id=task_id,
         )
         run.route_decisions = route_decisions
@@ -1288,7 +1380,7 @@ class LiviumAgent:
             str(name) for decision in route_decisions
             for name in (decision.get("evidence", {}).get("capability_candidates") or [])
         })
-        captured, investigated = self._discovery_counts(run.task_id)
+        captured, investigated, stopped_followups = self._discovery_counts(run.task_id)
         reused = bool(executed_capability_tools)
         return Ledger(self.store).record(
             task_id=run.task_id,
@@ -1314,10 +1406,16 @@ class LiviumAgent:
             verification_state=run.verification.get("state"), status=run.status,
             duration_ms=int((time.monotonic() - started) * 1000),
             discoveries_captured=captured, followups_investigated=investigated,
+            followups_stopped=stopped_followups,
         )
 
-    def _discovery_counts(self, task_id: str) -> tuple[int, int]:
-        """How many observations this task captured, and how many were investigated.
+    #: The statuses an investigation can end in. Reaching one of them is a conclusion;
+    #: going back to ``ready`` is not -- it means a budget refused the next call and a
+    #: later cycle resumes the item.
+    _CONCLUSIONS = (COMPLETED, REJECTED, POSTPONED, BLOCKED)
+
+    def _discovery_counts(self, task_id: str) -> tuple[int, int, int]:
+        """How many observations this task captured, concluded, and left stopped.
 
         Read from the discovery records themselves. The model's own account of what it
         noticed is not a measurement, and the ledger exists to be measured.
@@ -1325,16 +1423,23 @@ class LiviumAgent:
 
         rows = self.store.query("SELECT history FROM discovery WHERE source_task=?",
                                 (task_id,))
-        investigated = 0
+        concluded = 0
+        stopped = 0
         for row in rows:
             try:
                 history = json.loads(row["history"] or "[]")
             except (TypeError, ValueError):
                 continue
-            if any(str(entry.get("event", "")).endswith("-> investigating")
-                   for entry in history if isinstance(entry, dict)):
-                investigated += 1
-        return len(rows), investigated
+            events = [str(entry.get("event", "")) for entry in history
+                      if isinstance(entry, dict)]
+            attempted = any(event.endswith("-> investigating") for event in events)
+            reached = any(event.endswith(f"-> {state}") for event in events
+                          for state in self._CONCLUSIONS)
+            if reached:
+                concluded += 1
+            elif attempted:
+                stopped += 1
+        return len(rows), concluded, stopped
 
     def _tools_used(self, task_id: str) -> list[str]:
         """Tool names this task actually invoked, from the journal (not from memory)."""
@@ -1358,14 +1463,22 @@ class LiviumAgent:
     def _call_model(
         self, conversation: Conversation, built, observations: list[str],
         tool_names: Sequence[str] | None = None, task_id: str = "",
+        spend: Callable[[str, float], bool] = no_spend,
     ) -> Any:
-        """One real completion, with an honest response to context rejection."""
+        """One real completion, with an honest response to context rejection.
+
+        ``spend`` is charged for every transport attempt before it is made, so a task
+        that runs on a follow-up cycle's budget cannot ask for one more completion than
+        the budget allows. It is the no-op by default: a task that no budget governs is
+        never refused by one.
+        """
 
         tools = self.tools.specs_for(tool_names) if tool_names else self.tools.specs()
         if tool_names and not tools:  # every selected name was unknown: never send none
             tools = self.tools.specs()
         prompt_estimate = built.report["tokens_estimated"]
         for attempt in (1, 2):
+            spend("model_calls", 1)  # before the attempt, not after it succeeded
             try:
                 reply = self.client.complete(conversation, tools)
             except ProviderRejected as exc:
@@ -1417,6 +1530,15 @@ class LiviumAgent:
                 task_id=task_id or None,
             )
             self._calibrate(prompt_estimate, reply.usage)
+            # Usage the provider reported is real spend and is charged as such. It can
+            # only be charged after the reply -- its size is not known in advance -- so
+            # an overspend here stops the *next* call, which is the whole of what a
+            # token limit can honestly promise.
+            usage = reply.usage or {}
+            in_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+            out_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+            if in_tokens is not None or out_tokens is not None:
+                spend("tokens", float(in_tokens or 0) + float(out_tokens or 0))
             return reply
         return None
 

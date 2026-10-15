@@ -51,7 +51,7 @@ independently runnable and testable:
 ```bash
 python3 -m unittest discover -s tests -t tests      # 289 tests, ~23s, no network
 python3 demos/run_demonstrations.py                 # the six mandatory demonstrations
-python3 demos/run_mission_demos.py --approve-as "Your Name"   # the six mission demonstrations
+python3 demos/run_mission_demos.py --approve-as "Your Name"   # the mission demonstrations
 ```
 
 ---
@@ -165,16 +165,18 @@ Run `python3 -m livium doctor --json` for the complete effective configuration.
   retrieval, capability discovery, a failure that changes the next action, resume after
   interruption, reuse across processes, token accounting (M1–M6, and M7 deferred
   discovery, M8 the queue through the CLI, M9 modification → record → review → refusal →
-  verified recovery)
+  verified recovery, M10 a follow-up stopped by its budget)
 
 ## Honest status
 
 Implemented and verified: task loop, tools, permissions, memory, context, recovery,
-verification, capability lifecycle, guardian controls, viewer, HTTP API, 339 automated
+verification, capability lifecycle, guardian controls, viewer, HTTP API, 353 automated
 tests, deterministic step routing, selective tool exposure, the per-task learning
 ledger, human-approved operations that run exactly once per decision, an append-only
 integrity record with an enforced review/approval/recovery workflow, and a deferred
-discovery queue whose follow-up investigations run as their own bounded tasks.
+discovery queue whose follow-up investigations run as their own tasks on a budget that is
+charged before each call, so a stopped investigation is recorded as stopped rather than
+concluded.
 
 The integrity claims are behavioural, not documentary: `livium integrity verify` runs
 eleven probes in a separate interpreter against a copy of the tree, and a candidate that

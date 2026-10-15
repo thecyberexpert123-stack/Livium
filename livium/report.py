@@ -416,7 +416,8 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         "SELECT status, COUNT(*) AS n FROM discovery GROUP BY status")}
     ledger_discoveries = store.one(
         "SELECT COALESCE(SUM(discoveries_captured), 0) AS captured, "
-        "COALESCE(SUM(followups_investigated), 0) AS investigated FROM ledger")
+        "COALESCE(SUM(followups_investigated), 0) AS investigated, "
+        "COALESCE(SUM(followups_stopped), 0) AS stopped FROM ledger")
     cycles = store.events(event_type="discovery_cycle_complete", limit=200)
     stopped = store.events(event_type="discovery_cycle_stopped", limit=200)
     cycle_spend = {"model_calls": 0, "steps": 0, "tokens": 0}
@@ -435,8 +436,10 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
            f"(shape: {config.limits.followup_max_depth}) instead of being queued."),
         (f"Capture is measured, not reported: the ledger holds "
          f"{ledger_discoveries['captured'] if ledger_discoveries else 0} captured observation(s) "
-         f"attributed to tasks and {ledger_discoveries['investigated'] if ledger_discoveries else 0} "
-         f"item(s) investigated."),
+         f"attributed to tasks, {ledger_discoveries['investigated'] if ledger_discoveries else 0} "
+         f"item(s) investigated to a conclusion, and "
+         f"{ledger_discoveries['stopped'] if ledger_discoveries else 0} investigation(s) a budget "
+         f"stopped before it concluded -- kept, not counted as done."),
         (f"Follow-up cycles completed here: {len(cycles)}, having spent "
          f"{cycle_spend['model_calls']} model call(s), {cycle_spend['steps']} step(s) and "
          f"{cycle_spend['tokens']} token(s) that the transport reported; "

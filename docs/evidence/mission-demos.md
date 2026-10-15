@@ -56,7 +56,7 @@ the capability was found by requirement words, its declared interface was loaded
       "word_count"
     ],
     "test_exit_code": 0,
-    "test_duration_ms": 74,
+    "test_duration_ms": 76,
     "network_isolated": null
   },
   "search_matches": [
@@ -165,7 +165,7 @@ the write was refused as requiring approval, the run stopped instead of retrying
         "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-release-m3/restricted/release.md\",\"purpose\":\"the release file\"}",
         "reason": "write needs approval: /tmp/livium-release-m3/restricted/release.md is inside an approval root (/tmp/livium-release-m3/restricted). A human decides, not the agent; see `livium approvals`.",
         "status": "pending",
-        "created_at": "2026-10-15T08:54:00+00:00",
+        "created_at": "2026-10-15T09:06:48+00:00",
         "decided_at": null,
         "decided_by": null,
         "note": null
@@ -234,7 +234,7 @@ a killed process left one unconfirmed side effect; the resumed run established i
       "tool": "write_file",
       "determination": "confirmed_complete",
       "detail": "/tmp/livium-release-m3/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
-      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792054441090408675 path=/tmp/livium-release-m3/workspace/interrupted.md"
+      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792055208596871730 path=/tmp/livium-release-m3/workspace/interrupted.md"
     }
   ],
   "intent_rows_after_resume": [
@@ -386,8 +386,8 @@ the task finished complete (verified) through ['execute', 'execute', 'execute', 
       "flagged": "[\"silently\"]",
       "depth": 0,
       "spawned_by": null,
-      "outcome": "investigated as task a6e34fe7f499 and the harness verified the investigation touched real state. The conclusion below is the task's own claim, not a harness finding: the file names no unit anywhere, so the ambiguity is real: 'bolts: 12' could be a count or a measure",
-      "verification_evidence": "task a6e34fe7f499: tools executed read_file, finish_task; verification verified; checks: event 'tool_call' recorded at 2026-10-15T08:54:01+00:00"
+      "outcome": "investigated as task 959f8d94eab4 and the harness verified the investigation touched real state. The conclusion below is the task's own claim, not a harness finding: the file names no unit anywhere, so the ambiguity is real: 'bolts: 12' could be a count or a measure",
+      "verification_evidence": "task 959f8d94eab4: tools executed read_file, finish_task; verification verified; tools/verification: complete; checks: event 'tool_call' recorded at 2026-10-15T09:06:49+00:00"
     }
   ],
   "ledger": {
@@ -439,7 +439,7 @@ the task finished complete (verified) through ['execute', 'execute', 'execute', 
       "flagged": [
         "silently"
       ],
-      "source_task": "06d2e999ed40",
+      "source_task": "21a2b5a388d2",
       "spawned_by": null
     }
   ],
@@ -482,7 +482,7 @@ the modification became 1 append-only record(s) and `integrity status` reported 
   "recorded_events": [
     {
       "id": 4,
-      "ts": "2026-10-15T08:54:02+00:00",
+      "ts": "2026-10-15T09:06:50+00:00",
       "event": "change_detected",
       "tier": null,
       "paths": [
@@ -516,7 +516,7 @@ the modification became 1 append-only record(s) and `integrity status` reported 
       "attributable_to": null,
       "tool": null,
       "revision": {
-        "head": "7f21163b22c535bcc28abb0d4eb8b282ba633e18",
+        "head": "980724346baecddcfed6ebc2832dc48db4fe3c81",
         "working_tree_status": "",
         "last_commit_touching_file": "",
         "note": "git state only; the working tree is not verified by git"
@@ -558,5 +558,74 @@ the modification became 1 append-only record(s) and `integrity status` reported 
     "digest_on_disk_after": "6ba0d22d9f7a2466ed1784567ef7a5662bdbe900ce42ad4d3a8f1511ebc755cf",
     "digest_matches": true
   }
+}
+```
+
+## M10 follow-up budget — verified
+
+the task that noticed the observation finished complete (verified) and paid nothing; the follow-up that did pay made exactly 2 model call(s) of the 2 allowed, was stopped by the budget (model_calls budget exhausted (2 of 2)), and its record stayed ready for a later cycle; the ledger counts 0 concluded and 1 stopped
+
+```json
+{
+  "task_status": "complete",
+  "task_verification": {
+    "total": 1,
+    "passed": 1,
+    "counts": {
+      "passed": 1
+    },
+    "state": "verified",
+    "remaining": []
+  },
+  "investigation_model_replies": 2,
+  "cycle": {
+    "budget": {
+      "exhausted": "model_calls budget exhausted",
+      "limits": {
+        "max_items": 2,
+        "max_model_calls": 2,
+        "max_seconds": 120.0,
+        "max_steps": 8,
+        "max_tokens": 20000
+      },
+      "spent": {
+        "model_calls": 2,
+        "steps": 3,
+        "tokens": 0
+      },
+      "tokens_measured": false
+    },
+    "investigated": [
+      1
+    ],
+    "spent": {
+      "model_calls": 2,
+      "seconds": 0.037,
+      "steps": 3,
+      "tokens": 0
+    },
+    "stopped_because": "model_calls budget exhausted (2 of 2)",
+    "tokens_measured": false
+  },
+  "stop_events": [
+    {
+      "kind": "model_calls",
+      "limit": 2.0,
+      "reason": "model_calls budget exhausted (2 of 2)",
+      "spent": 2.0,
+      "step": 3
+    }
+  ],
+  "discovery_records": [
+    {
+      "id": 1,
+      "status": "ready"
+    }
+  ],
+  "ledger": {
+    "followups_investigated": 0,
+    "followups_stopped": 1
+  },
+  "model_note": "replies from the scripted test double; the budget, the loop, the journal, the ledger and the queue are real code paths"
 }
 ```

@@ -214,11 +214,15 @@ class Ledger:
         status: str | None = None,
         duration_ms: int | None = None,
         #: Deferred work, measured rather than described: how many observations this
-        #: task captured for later, and how many follow-up investigations were run for
-        #: it. Both are read back from the discovery table, never from the model's
-        #: account of what it did.
+        #: task captured for later, how many follow-up investigations reached a
+        #: conclusion for it, and how many were stopped by the budget and left ready.
+        #: All three are read back from the discovery records, never from the model's
+        #: account of what it did. The distinction between the last two matters: an
+        #: investigation the budget stopped did not settle anything, and the record it
+        #: belongs to is still waiting for a later cycle.
         discoveries_captured: int = 0,
         followups_investigated: int = 0,
+        followups_stopped: int = 0,
     ) -> int:
         with self.store.transaction() as conn:
             cur = conn.execute(
@@ -229,8 +233,8 @@ class Ledger:
                 "usage_reported_calls, tokens_estimated, tools_executed, retries, denials, "
                 "approvals_requested, failures, route_decisions, verification_state, status, "
                 "duration_ms, discoveries_captured, followups_investigated, "
-                "created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "followups_stopped, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task_id, category, len(objective), tools_exposed, tools_available,
                     json.dumps(list(capabilities_selected)), json.dumps(list(memory_ids)),
@@ -242,7 +246,7 @@ class Ledger:
                     tools_executed, retries, denials, approvals_requested, failures,
                     json.dumps(list(route_decisions), default=str),
                     verification_state, status, duration_ms, discoveries_captured,
-                    followups_investigated, now(),
+                    followups_investigated, followups_stopped, now(),
                 ),
             )
             return int(cur.lastrowid or 0)

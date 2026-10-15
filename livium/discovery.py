@@ -595,6 +595,41 @@ class DiscoveryQueue:
 # -- bounded follow-up cycles ----------------------------------------------
 
 @dataclasses.dataclass
+class BudgetExhausted(RuntimeError):
+    """Raised by a spend callback when the next unit of work would pass a limit.
+
+    A refusal has to travel, not be returned and forgotten: the caller that was about
+    to make a model call must not make it, and the reason must reach the record. So the
+    callback raises and the runtime catches it, stops cleanly and says which limit
+    stopped it.
+    """
+
+    def __init__(self, kind: str, limit: float, spent: float,
+                 reason: str | None = None) -> None:
+        self.kind = kind
+        self.limit = limit
+        self.spent = spent
+        # The sentence the record will carry. One limit, one spelling: a stop that is
+        # named "seconds budget exhausted" in the exception and "time budget exhausted"
+        # on the record is two limits as far as a reader is concerned.
+        self.reason = reason or f"{kind} budget exhausted ({spent:g} of {limit:g})"
+        super().__init__(self.reason)
+
+
+def no_spend(kind: str, amount: float = 1) -> bool:
+    """The default spend callback: an ordinary task is charged to nothing.
+
+    The runner is handed a callback rather than reaching for a budget it does not have,
+    which is why this exists: a task that was not started by a follow-up cycle has no
+    follow-up budget to charge, and must not acquire one by accident. Every default in
+    the runtime is this function, so the only thing that ever refuses a call is a budget
+    that a cycle deliberately passed in.
+    """
+
+    return True
+
+
+@dataclasses.dataclass
 class FollowUpBudget:
     """What one follow-up cycle may spend. Every limit is checked before starting."""
 
@@ -610,8 +645,133 @@ class FollowUpBudget:
     #: claiming a guarantee it cannot enforce.
     tokens_are_measured: bool = False
 
+    #: The counters, one per limit, charged by whoever spends: the cycle between items
+    #: and the runner's own calls during one. There is exactly one of each, which is the
+    #: point -- a cycle that counted separately from the runner would report a total that
+    #: neither of them enforced.
+    spent: dict[str, float] = dataclasses.field(
+        default_factory=lambda: {"model_calls": 0.0, "steps": 0.0, "tokens": 0.0})
+
+    #: Set by the charge that was refused, so the stop can be reported with the limit's
+    #: own name instead of a sentence someone assembled afterwards.
+    exhausted: str = ""
+
+    #: The clock and the moment the time limit runs out, both set by the cycle when it
+    #: starts. Without them ``max_seconds`` could only be checked between items -- which
+    #: says nothing about the item that is running, and that is the one that can overrun
+    #: it. A budget built and used on its own has no deadline and enforces no time.
+    clock: Callable[[], float] | None = None
+    deadline: float | None = None
+
+    def limit_for(self, kind: str) -> float:
+        limits = {"model_calls": self.max_model_calls, "steps": self.max_steps,
+                  "tokens": self.max_tokens}
+        if kind not in limits:
+            raise KeyError(f"no budget limit named {kind!r}; charge one of "
+                           f"{sorted(limits)} instead")
+        return float(limits[kind])
+
+    def spend(self, kind: str, amount: float = 1) -> bool:
+        """Charge the budget *before* the work happens, or refuse it.
+
+        This is the callback the runner passes down to its model calls and its command
+        executions. Refusing is a raise rather than a ``False`` because the caller is
+        about to do something with a cost: a return value that is easy to ignore is how
+        a budget becomes a report of what was already spent.
+        """
+
+        if not self.enabled:
+            return True
+        if amount < 0:
+            raise ValueError("a budget is charged, never refunded")
+        self._check_deadline()
+        limit = self.limit_for(kind)
+        used = float(self.spent.get(kind, 0.0))
+        if used + amount > limit:
+            self.exhausted = f"{kind} budget exhausted"
+            raise BudgetExhausted(kind, limit, used)
+        self.spent[kind] = used + amount
+        if kind == "tokens":
+            # The counter is only ever charged with usage the provider reported, so the
+            # token limit stops being an estimate the moment it is charged.
+            self.tokens_are_measured = True
+        return True
+
+    def record(self, kind: str, amount: float) -> None:
+        """Add spend that has already happened and could not be charged in advance.
+
+        Token usage is the case: the size of a reply is not known until it arrives. The
+        total stays honest either way, and an overspend recorded here is refused by the
+        *next* charge rather than hidden.
+        """
+
+        if amount <= 0 or not self.enabled:
+            return
+        self.limit_for(kind)  # unknown kinds are a bug, not a silent no-op
+        self.spent[kind] = float(self.spent.get(kind, 0.0)) + float(amount)
+
+    def _check_deadline(self) -> None:
+        """Refuse work once the cycle's time is up, wherever the charge comes from."""
+
+        if self.deadline is None or self.clock is None:
+            return
+        elapsed = self.clock()
+        remaining = self.deadline - elapsed
+        if remaining <= 0:
+            spent = self.max_seconds - remaining
+            self.exhausted = "time budget exhausted"
+            raise BudgetExhausted(
+                "seconds", self.max_seconds, spent,
+                reason=f"time budget exhausted ({spent:g}s of {self.max_seconds:g}s)")
+
+    def remaining_seconds(self) -> float | None:
+        """How long the cycle has left, or None when it is enforcing no deadline."""
+
+        if self.deadline is None or self.clock is None:
+            return None
+        return self.deadline - self.clock()
+
+    def exhausted_limit(self) -> str:
+        """The limit that is used up, or "" while the budget still has room."""
+
+        if not self.enabled:
+            return ""
+        if self.deadline is not None and self.clock is not None \
+                and self.clock() >= self.deadline:
+            return "time budget exhausted"
+        for kind, limit in (("model_calls", self.max_model_calls), ("steps", self.max_steps),
+                            ("tokens", self.max_tokens)):
+            if float(self.spent.get(kind, 0.0)) >= float(limit):
+                # One spelling for one limit: the reason a charge was refused and the
+                # reason a cycle stopped have to be the same sentence, or the journal
+                # ends up with two names for one thing.
+                return f"{kind} budget exhausted"
+        return ""
+
+    def report(self) -> dict[str, Any]:
+        """The budget as the record should hold it: limits, spend, and what stopped it."""
+
+        return {"limits": {"max_items": self.max_items, "max_seconds": self.max_seconds,
+                           "max_model_calls": self.max_model_calls,
+                           "max_steps": self.max_steps, "max_tokens": self.max_tokens},
+                "spent": {kind: (int(value) if kind != "seconds" else value)
+                          for kind, value in self.spent.items()},
+                "tokens_measured": self.tokens_are_measured,
+                "exhausted": self.exhausted}
+
     def as_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        """The budget as plain data, for a caller that is about to store or print it.
+
+        The clock and the deadline are left out on purpose. They are the cycle's control
+        handles rather than part of the budget, and a callable that reaches a durable
+        journal payload is silently recorded as the string representation of a function
+        -- which is how this was found.
+        """
+
+        data = dataclasses.asdict(self)
+        data.pop("clock", None)
+        data.pop("deadline", None)
+        return data
 
 
 @dataclasses.dataclass
@@ -666,9 +826,11 @@ class FollowUpCycle:
             return results
 
         started = clock()
-        used_calls = 0
-        used_steps = 0
-        used_tokens = 0
+        # One clock for the one time limit: the budget is told when its time runs out, so
+        # the charge that happens *during* an item can refuse it -- not only the check
+        # between items, which cannot see an item that overruns.
+        self.budget.clock = clock
+        self.budget.deadline = started + float(self.budget.max_seconds)
 
         if only is not None:
             record = self.queue.get(only)
@@ -680,24 +842,17 @@ class FollowUpCycle:
 
         for record in candidates:
             elapsed = clock() - started
-            if elapsed >= self.budget.max_seconds:
-                self._stop("time budget exhausted", record, task_id,
-                           {"seconds": round(elapsed, 3), "limit": self.budget.max_seconds})
-                break
-            if used_calls >= self.budget.max_model_calls:
-                self._stop("model-call budget exhausted", record, task_id,
-                           {"model_calls": used_calls, "limit": self.budget.max_model_calls})
-                break
-            if used_steps >= self.budget.max_steps:
-                self._stop("step budget exhausted", record, task_id,
-                           {"steps": used_steps, "limit": self.budget.max_steps})
-                break
-            if used_tokens >= self.budget.max_tokens:
-                self._stop("token budget exhausted", record, task_id,
-                           {"tokens": used_tokens, "limit": self.budget.max_tokens,
-                            "measured": self.budget.tokens_are_measured})
+            used_up = self.budget.exhausted_limit()
+            if used_up:
+                # The counters are the budget's own, so a limit the runner used up
+                # during the previous item stops the cycle here rather than at the
+                # point where the total happens to be checked.
+                self._stop(used_up, record, task_id,
+                           {**self.budget.spent, "seconds": round(elapsed, 3),
+                            "limit": used_up})
                 break
 
+            before = dict(self.budget.spent)
             self.queue.transition(
                 record.id, INVESTIGATING,
                 note="follow-up cycle started this investigation",
@@ -705,14 +860,27 @@ class FollowUpCycle:
             )
             try:
                 outcome = runner(record, self.budget) or {}
+            except BudgetExhausted as exc:
+                # The runner tried to spend past the limit and was refused. That is a
+                # stop, not a crash: the item returns to ready for a later cycle.
+                outcome = {"stopped_because": exc.reason}
             except Exception as exc:  # an investigation that crashes is not a success
                 outcome = {"status": POSTPONED,
                            "reason": f"investigation raised {type(exc).__name__}: {exc}"}
 
-            spent = dict(outcome.get("spent") or {})
-            used_calls += int(spent.get("model_calls") or 0)
-            used_steps += int(spent.get("steps") or 0)
-            used_tokens += int(spent.get("tokens") or 0)
+            self._settle_reported_spend(outcome.get("spent") or {}, before)
+
+            stopped = str(outcome.get("stopped_because") or "")
+            if stopped:
+                self.queue.transition(
+                    record.id, READY,
+                    note=f"budget stopped this investigation: {stopped}",
+                    by="harness",
+                )
+                results.append(FollowUpResult(record.id, READY, stopped,
+                                              self._spent_since(before)))
+                self._stop(stopped, record, task_id, {**self.budget.spent, "limit": stopped})
+                break
 
             status = str(outcome.get("status") or POSTPONED)
             reason = str(outcome.get("reason") or "no reason recorded by the investigation")
@@ -743,7 +911,8 @@ class FollowUpCycle:
                 status = record.status
                 reason = f"transition to {status} refused: {exc}"
 
-            results.append(FollowUpResult(record.id, status, reason, spent,
+            results.append(FollowUpResult(record.id, status, reason,
+                                          self._spent_since(before),
                                           evidence=str(evidence or "")))
 
         if self.last_stop_reason == "the cycle has not run":
@@ -751,14 +920,56 @@ class FollowUpCycle:
         self.queue.store.append_event(
             "discovery_cycle_complete",
             {"investigated": [r.discovery_id for r in results],
-             "budget": self.budget.as_dict(),
-             "spent": {"model_calls": used_calls, "steps": used_steps,
-                       "tokens": used_tokens,
+             "budget": self.budget.report(),
+             "spent": {"model_calls": int(self.budget.spent.get("model_calls", 0)),
+                       "steps": int(self.budget.spent.get("steps", 0)),
+                       "tokens": int(self.budget.spent.get("tokens", 0)),
                        "seconds": round(clock() - started, 3)},
-             "tokens_measured": self.budget.tokens_are_measured},
+             "tokens_measured": self.budget.tokens_are_measured,
+             "stopped_because": (self.last_stop_reason
+                                 if self.last_stop_reason != "every eligible discovery was "
+                                                            "evaluated" else "")},
             task_id=task_id,
         )
         return results
+
+    def _spent_since(self, before: dict[str, float]) -> dict[str, Any]:
+        """What one item spent, read from the shared counters rather than counted twice."""
+
+        spent = self.budget.spent
+        remaining = self.budget.remaining_seconds()
+        return {
+            "model_calls": int(spent.get("model_calls", 0) - before.get("model_calls", 0)),
+            "steps": int(spent.get("steps", 0) - before.get("steps", 0)),
+            "tokens": int(spent.get("tokens", 0) - before.get("tokens", 0)),
+            "tokens_measured": self.budget.tokens_are_measured,
+            **({"seconds_left": round(remaining, 3)} if remaining is not None else {}),
+        }
+
+    def _settle_reported_spend(self, reported: dict[str, Any], before: dict[str, float]) -> None:
+        """Add spend a runner reported but did not charge as it went.
+
+        A runner that charges the shared counters itself (the real one does) reports what
+        the counters already hold, and nothing is added. A runner that only returns
+        figures at the end -- a scripted one in a test, say -- still has its spend
+        counted, because the alternative is a budget that believes it has room it has
+        already used. Nothing is ever subtracted: the counters only rise.
+        """
+
+        for kind in ("model_calls", "steps"):
+            already = self.budget.spent.get(kind, 0) - before.get(kind, 0)
+            extra = float(reported.get(kind) or 0) - already
+            if extra > 0:
+                self.budget.record(kind, extra)
+        if reported.get("tokens"):
+            already = self.budget.spent.get("tokens", 0) - before.get("tokens", 0)
+            extra = float(reported.get("tokens") or 0) - already
+            if extra > 0:
+                self.budget.record("tokens", extra)
+        if reported.get("tokens_measured"):
+            # The runner's own count was observed rather than estimated, so the token
+            # limit stops being an estimate limit.
+            self.budget.tokens_are_measured = True
 
     def _stop(self, reason: str, next_record: Discovery, task_id: str | None,
               spent: dict[str, Any]) -> None:

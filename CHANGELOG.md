@@ -54,6 +54,23 @@ or lost with the context. Nothing from 0.2.0's behaviour was removed.
 - CLI: `livium discovery list|show|review|update|investigate` and
   `livium integrity status|events|incidents|review|verify|approve|reject|restore`.
 
+**One enforced follow-up budget** (`livium/discovery.py`, `livium/agent.py`)
+- `FollowUpBudget` owns the counters, and `spend()` is the callback the runner passes down
+  to its own model calls, its steps, its command executions and its token usage. The charge
+  happens **before** the work; a refusal raises and the item returns to `ready` for a later
+  cycle. An ordinary task gets a no-op and is charged to nothing, so the only thing that can
+  refuse a model call is a budget a cycle deliberately supplied.
+- The time limit is a deadline on the same budget rather than a check between items, so an
+  item that overruns is stopped while it is running. The token limit is charged from the
+  usage the provider reported; because a reply's size is not known in advance, it stops the
+  *next* call, and the record says so.
+- `task_stopped`, `discovery_investigation_stopped` and `discovery_cycle_stopped` name the
+  limit that stopped the work, in one spelling, and `discovery_cycle_complete` carries the
+  budget's own report (limits, spend, whether tokens were measured, what was exhausted).
+- The learning ledger distinguishes an investigation that concluded from one a budget
+  stopped: `followups_investigated` counts conclusions, `followups_stopped` counts the
+  attempts left ready (`SCHEMA_VERSION = 4`).
+
 ### Changed
 
 - `GrowthGuardian` keeps its public API and delegates policy, snapshots, review and the
@@ -97,16 +114,26 @@ or lost with the context. Nothing from 0.2.0's behaviour was removed.
   derived from the spawning record, which is what makes the chain bounded.
 - **`register_external` never recorded a capability's provenance**, so every promoted
   capability appeared in the tool catalogue as a builtin.
+- **The follow-up budget was checked between items and reported afterwards**, so one
+  investigation could spend the whole cycle and the totals were assembled from three
+  separate tallies. The counters now live on the budget and are charged by the work itself:
+  a follow-up cannot spend more than the budget says.
+- **An investigation the budget stopped was counted as evidence of work done.** The ledger
+  counted any record whose history mentioned `investigating`, so a stopped attempt was
+  reported as investigated while its own record said `ready`. The two are now separate
+  columns, and the report prints both.
 
 ### Verified
 
-- `python3 -m unittest discover -s tests -t tests` — **339 tests, OK** (24 modules).
+- `python3 -m unittest discover -s tests -t tests` — **353 tests, OK** (24 modules).
 - `livium integrity verify` — 11/11 probes pass in 0.13 s; a candidate that stops the
   policy module watching its components fails 2 of them and is recorded as
   `enforcement_verification_failed`.
-- `python3 demos/run_mission_demos.py --approve-as "Demo Reviewer"` — **M1–M9 all
-  verified**, including the two new scenarios (M7 deferred discovery, M8 the queue
-  through the CLI, M9 modification → record → review → refusal → verified recovery).
+- `python3 demos/run_mission_demos.py --approve-as "Demo Reviewer"` — **M1–M10 all
+  verified**, including the scenarios this release adds (M7 deferred discovery, M8 the queue
+  through the CLI, M9 modification → record → review → refusal → verified recovery, M10 an
+  investigation stopped by its budget: exactly 2 model calls of 2 allowed, not reported as
+  concluded, record left `ready`, ledger 0 concluded / 1 stopped).
 
 ### Not verified here
 

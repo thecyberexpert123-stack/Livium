@@ -5,7 +5,8 @@ Usage::
 
     python3 demos/run_mission_demos.py [--home DIR] [--approve-as "Your Name"] [--json-out PATH]
 
-Six scenarios from section 12 of the mission, each performed with the real runtime
+Scenarios from section 12 of the mission plus what the later missions added, each
+performed with the real runtime
 and recorded with its observed evidence:
 
 M1  selective retrieval      -- a relevant subset of a 32-record store reaches the prompt
@@ -30,6 +31,12 @@ M9  integrity response       -- a protected file is modified, the modification b
                                 append-only record, a structural review runs, an
                                 unattributable recovery is refused, and a named human
                                 recovery restores the baselined bytes and re-hashes them
+And the bound this mission adds:
+
+M10 the follow-up budget     -- a follow-up investigation is stopped mid-flight by the
+                                configured model-call budget: the calls that happened are
+                                exactly the calls allowed, the investigation is not reported
+                                as concluded, and the record stays ready for a later cycle
 
 Nothing here claims to prove model quality. Model *replies* come from the scripted
 test double and every record says so; the router, permission engine, store, memory,
@@ -687,6 +694,86 @@ class MissionDemos:
                                             "message": (anonymous.stderr or "").strip()[:200]},
              "named_recovery": recovery})
 
+    # -- M10 the follow-up budget ------------------------------------------
+    def m10_follow_up_budget(self) -> None:
+        self.banner("M10 — a follow-up cannot spend more than its budget says")
+        # Its own home, for the same reason the integrity probes own theirs: this
+        # scenario is about which cycle paid for which calls, and a queue left behind by
+        # an earlier scenario would be buying things in this one's budget. A scenario
+        # that only passes when it runs alone is not evidence.
+        home = self.home / "m10-budget"
+        isolated = {"LIVIUM_HOME": str(home), "LIVIUM_DB": str(home / "livium.db"),
+                    "LIVIUM_WORKSPACE": str(home / "workspace"),
+                    "LIVIUM_EVIDENCE": str(home / "evidence"),
+                    "LIVIUM_PROMOTED_DIR": str(home / "promoted")}
+        config = self.config(**isolated)
+        config.ensure_dirs()
+        inventory = config.paths.workspace / "budget-inventory.txt"
+        inventory.write_text("bolts: 12\nnuts: 30\n", encoding="utf-8")
+        script = [
+            {"tool_calls": [{"name": "read_file", "arguments": {
+                "path": str(inventory), "purpose": "count the parts"}}]},
+            {"tool_calls": [{"name": "record_discovery", "arguments": {
+                "title": "the parts file names no unit",
+                "observation": "The file stores bare integers ('bolts: 12') and names no unit.",
+                "confidence": 0.6, "from_content": True,
+                "evidence": "read_file workspace/budget-inventory.txt"}}]},
+            {"tool_calls": [{"name": "finish_task", "arguments": {
+                "summary": "read the inventory and reported the part counts",
+                "status": "complete"}}]},
+        ]
+        # The investigation would need five of its own turns; the budget allows two.
+        for index in range(4):
+            script.append({"tool_calls": [{"name": "read_file", "arguments": {
+                "path": str(inventory),
+                "purpose": f"follow-up inspection {index}"}}]})
+        script.append({"tool_calls": [{"name": "finish_task", "arguments": {
+            "summary": "no unit is named anywhere in the file", "status": "complete"}}]})
+
+        agent = self.agent(script=script, LIVIUM_FOLLOWUP_MAX_MODEL_CALLS="2",
+                           LIVIUM_FOLLOWUP_MAX_STEPS="8", **isolated)
+        run = agent.run_task("report how many bolts the inventory holds",
+                             [{"kind": "file_exists", "path": str(inventory)}])
+        replies = [row for row in agent.store.events(event_type="model_reply", limit=200)
+                   if row["task_id"] != run.task_id]
+        stopped = [json.loads(row["payload"]) for row in
+                   agent.store.events(event_type="task_stopped", limit=10)]
+        cycles = [json.loads(row["payload"]) for row in
+                  agent.store.events(event_type="discovery_cycle_complete", limit=10)
+                  if row["task_id"] == run.task_id]
+        records = [dict(r) for r in agent.store.query(
+            "SELECT id, status FROM discovery WHERE source_task=?", (run.task_id,))]
+        ledger = dict(agent.store.one(
+            "SELECT followups_investigated, followups_stopped FROM ledger "
+            "ORDER BY id DESC LIMIT 1") or {})
+        agent.close()
+
+        cycle = cycles[-1] if cycles else {}
+        outcome = ("verified" if (run.status == "complete"
+                                  and len(replies) == 2
+                                  and cycle.get("spent", {}).get("model_calls") == 2
+                                  and "model_calls budget exhausted" in
+                                      str(cycle.get("stopped_because"))
+                                  and [r["status"] for r in records] == ["ready"]
+                                  and ledger.get("followups_investigated") == 0
+                                  and ledger.get("followups_stopped") == 1)
+                   else "failed")
+        self.record(
+            "M10 follow-up budget", outcome,
+            f"the task that noticed the observation finished {run.status} "
+            f"({run.verification['state']}) and paid nothing; the follow-up that did pay made "
+            f"exactly {len(replies)} model call(s) of the 2 allowed, was stopped by the budget "
+            f"({cycle.get('stopped_because')}), and its record stayed "
+            f"{(records[0]['status'] if records else 'absent')} for a later cycle; the ledger "
+            f"counts {ledger.get('followups_investigated')} concluded and "
+            f"{ledger.get('followups_stopped')} stopped",
+            {"task_status": run.status, "task_verification": run.verification,
+             "investigation_model_replies": len(replies),
+             "cycle": cycle, "stop_events": stopped, "discovery_records": records,
+             "ledger": ledger,
+             "model_note": "replies from the scripted test double; the budget, the loop, the "
+                           "journal, the ledger and the queue are real code paths"})
+
     def write_report(self, json_path: pathlib.Path) -> pathlib.Path:
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps({"results": self.results,
@@ -727,7 +814,7 @@ def main() -> int:
         "M3": demos.m3_failure_changes_the_next_action, "M4": demos.m4_resume_after_interruption,
         "M5": demos.m5_experience_reuse, "M6": demos.m6_token_accounting,
         "M7": demos.m7_deferred_discovery, "M8": demos.m8_queue_workflow,
-        "M9": demos.m9_integrity_response,
+        "M9": demos.m9_integrity_response, "M10": demos.m10_follow_up_budget,
     }
     for name, function in catalogue.items():
         if wanted and name not in wanted:

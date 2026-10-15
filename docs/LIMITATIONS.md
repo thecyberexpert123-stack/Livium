@@ -235,3 +235,28 @@ touched real state; it cannot verify that a sentence about the world is true. Th
 stored in separate fields and the reason text says which is which, precisely so that a
 later reader cannot mistake the conclusion for a verified fact.
 
+## 19. What the follow-up budget can promise, and what it cannot
+
+A follow-up cycle's limits are enforced by charging the budget *before* the work: a model
+call, a step, a command execution. When a charge is refused the work does not happen, the
+item returns to `ready`, and the limit's own name is recorded. That much is a guarantee, and
+`tests/test_discovery.py` asserts it against the real loop, not against a stand-in.
+
+Three things it does not promise:
+
+**The token limit cannot stop the call that overspends it.** A reply's size is unknown until
+it arrives, so measured usage is charged after the fact and the limit stops the *next* call.
+The ceiling on one reply is the provider's own output limit, which Livium configures but does
+not enforce. Where the provider reports no usage at all, `tokens_are_measured` stays false and
+the token limit is an estimate limit; the record says so instead of implying a measurement.
+
+**The time limit is checked at charges, not continuously.** The deadline is read before each
+model call, step and command, so a single long-running command is bounded by the *command*
+timeout (`LIVIUM_MAX_COMMAND_SECONDS`), not by the cycle's remaining seconds. A cycle stops
+promptly between units of work, not during one.
+
+**A stopped investigation is not a conclusion.** The record keeps what the attempt established
+and stays `ready`, and it is not retried automatically: it waits for a later cycle, a human, or
+the next task that notices the same thing. The ledger reports these attempts in their own
+column (`followups_stopped`) rather than counting them as investigations that concluded, which
+means the two numbers have to be read together.
