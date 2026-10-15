@@ -272,10 +272,83 @@ async function refreshContext() {
     }).join("")}</tbody></table>`;
 }
 
+async function refreshDiscovery() {
+  const data = await getJSON("/api/discovery?limit=12");
+  const counts = data.counts || {};
+  const ranked = data.review || [];
+  const cycles = data.cycles || [];
+  const stopped = data.stopped_cycles || [];
+  const budget = data.budget || {};
+  const limits = budget.limits || {};
+  const spent = budget.spent || {};
+  const parts = [
+    `<div class="row">${Object.entries(counts).map(([name, n]) =>
+      badge(`${name} ${n}`, name === "ready" ? "ok" : "")).join(" ")}</div>`,
+    driftNote("deferred work", data, ["counts", "records", "review", "budget"]),
+    `<p class="hint">${esc(data.note)}</p>`,
+    `<p>one cycle may spend ${esc(limits.max_items)} item(s), ${esc(limits.max_model_calls)}
+       model call(s), ${esc(limits.max_steps)} step(s), ${esc(limits.max_seconds)}s and
+       ${esc(limits.max_tokens)} token(s); this cycle has spent
+       ${esc(spent.model_calls)} call(s) and ${esc(spent.steps)} step(s)
+       ${budget.tokens_measured ? "(token counts are measured)" :
+         "(token counts are an estimate limit)"}</p>`,
+  ];
+  if (!data.records?.length) {
+    parts.push(`<p class="empty">nothing has been noticed yet</p>`);
+  } else {
+    parts.push(`<ul>${data.records.slice(0, 6).map((r) => `<li>
+      <span class="tag">${esc(r.status)}</span>
+      <strong>${esc(r.title)}</strong>
+      <span class="hint-inline">${esc(r.provenance)}${r.flagged?.length ?
+        " · flagged as possibly instructional content" : ""}</span></li>`).join("")}</ul>`);
+  }
+  if (ranked.length) {
+    parts.push(`<p class="hint">why the next one is next: ` + ranked.slice(0, 3).map((entry) =>
+      `${esc(entry.record.title)} (${esc((entry.reasons || []).join("; "))})`).join(" | ") + `</p>`);
+  }
+  if (cycles.length || stopped.length) {
+    const last = cycles[cycles.length - 1]?.payload || {};
+    parts.push(`<p>${esc(cycles.length)} cycle(s) completed, ${esc(stopped.length)} stopped inside
+      their budget. Last cycle: spent ${esc((last.spent || {}).model_calls)} model call(s)${last.stopped_because ?
+      `, stopped because ${esc(last.stopped_because)}` : ", finished the queue"}</p>`);
+  }
+  $("discovery").innerHTML = parts.join("");
+}
+
+async function refreshIntegrity() {
+  const data = await getJSON("/api/integrity");
+  const inspection = data.inspection || {};
+  const enforcement = data.enforcement || {};
+  const events = data.events || [];
+  const parts = [
+    `<div class="row">${badge(`${inspection.status || "unknown"}`,
+      inspection.ok ? "ok" : "bad")}${badge(`frozen: ${data.frozen?.frozen ? "yes" : "no"}`,
+      data.frozen?.frozen ? "bad" : "")}${badge(`${data.snapshots} snapshot(s)`)}
+      ${badge(`${events.length} event(s)`)}</div>`,
+    driftNote("integrity", data, ["components", "inspection", "events", "enforcement", "snapshots"]),
+    `<p class="hint">${esc(data.note)}</p>`,
+    `<p>${esc((data.components || []).length)} watched component(s);
+       ${esc(enforcement.detections ?? 0)} detection(s),
+       ${esc(enforcement.approvals ?? 0)} approval(s),
+       ${esc(enforcement.recoveries ?? 0)} verified recovery(ies),
+       ${esc(enforcement.unresolved_detections ?? 0)} unresolved</p>`,
+  ];
+  if (inspection.changed?.length || inspection.missing?.length || inspection.unbaselined?.length) {
+    parts.push(`<p class="tag bad">changed: ${esc(truncateList(inspection.changed))} ·
+      missing: ${esc(truncateList(inspection.missing))} ·
+      unbaselined: ${esc(truncateList(inspection.unbaselined))}</p>`);
+  }
+  parts.push(`<p class="hint">the record recently: ` + (events.slice(0, 4).map((row) =>
+    `${esc(row.event)}${row.paths?.length ? ` (${esc(truncateList(row.paths, 2))})` : ""}`).join(" · ")
+    || "nothing recorded yet") + `</p>`);
+  $("integrity").innerHTML = parts.join("");
+}
+
 async function refreshAll() {
   try {
     await Promise.all([refreshStatus(), refreshCapabilities(), refreshMemory($("memory-query").value),
-                       refreshEvents(), refreshTasks(), refreshContext(), refreshLedger()]);
+                       refreshEvents(), refreshTasks(), refreshContext(), refreshLedger(),
+                       refreshDiscovery(), refreshIntegrity()]);
   } catch (error) {
     console.error(error);
     $("badges").innerHTML = badge(`viewer error: ${error.message}`, "bad");

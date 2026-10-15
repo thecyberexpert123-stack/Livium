@@ -43,6 +43,11 @@ class CaptureTests(QueueFixture):
                 with self.assertRaises(DiscoveryError):
                     self.queue.capture(**kwargs)
 
+    def test_an_unknown_id_is_none_rather_than_an_exception(self) -> None:
+        """The CLI and the viewer both read this return value; a raise kills the request."""
+
+        self.assertIsNone(self.queue.get(999999))
+
     def test_capture_is_persistent_and_not_an_in_memory_list(self) -> None:
         record = self.capture(why_it_matters="it would hide a bug", confidence=0.9)
         # A second queue object, built from scratch against the same database: the record

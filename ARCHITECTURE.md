@@ -357,6 +357,19 @@ checked by tests: the viewer displays real `context_report`, `permission_decisio
 `guardian_baseline`, `capability` and `verification` rows rather than invented
 dashboards.
 
+The API is read-mostly on purpose: state, memory, the journal, context reports,
+capabilities, tasks, deferred work and integrity are readable, and the operations that
+change a baseline, approve a protected change or promote a capability are **not**
+reachable over HTTP at all. Those are the controls that only mean something when a named
+human performs them, so they live on the CLI and the server tests assert their absence.
+
+`/api/discovery` returns the queue, the records, and the ranking *with its reasons* --
+a score without its terms is a number nobody can argue with. `/api/integrity` returns the
+watched set with each component's tier and rationale, the current inspection, the
+append-only record and the enforcement history. That route inspects with `record=False`:
+a viewer that polls every few seconds must not fill an append-only security record with
+its own refresh timer, and a test asserts the poll writes nothing.
+
 ## Why Python, and why no other language
 
 The decision was deliberate and is recorded here because the specification requires

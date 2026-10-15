@@ -168,7 +168,14 @@ class LiviumAgent:
         return self._criteria_cache[task_id][1]
 
     # -- deferred work ----------------------------------------------------
-    def _budget(self) -> FollowUpBudget:
+    def follow_up_budget(self) -> FollowUpBudget:
+        """A fresh budget for one follow-up cycle, from the configured limits.
+
+        Public because the limits are also worth showing before anything runs: the viewer
+        and the report print what a cycle *would* be allowed to spend, and they should read
+        it from the same place the cycle does.
+        """
+
         limits = self.config.limits
         return FollowUpBudget(
             max_items=limits.followup_max_items,
@@ -188,7 +195,7 @@ class LiviumAgent:
         is journalled with the reason, so a later cycle resumes exactly there.
         """
 
-        cycle = FollowUpCycle(self.discoveries, budget=self._budget())
+        cycle = FollowUpCycle(self.discoveries, budget=self.follow_up_budget())
         try:
             results = cycle.run(
                 functools.partial(self._followup_runner, task_id=task_id),
@@ -773,7 +780,7 @@ class LiviumAgent:
                     ready_discoveries=(0 if deferred_evaluated
                                        else len(self.discoveries.eligible())),
                     followup_enabled=self.config.limits.followup_enabled,
-                    followup_budget=self._budget().as_dict(),
+                    followup_budget=self.follow_up_budget().as_dict(),
                     criteria_satisfied=finished and criteria_satisfied,
                 ))
                 route_decisions.append({"step": step, **decision.as_dict()})

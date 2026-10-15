@@ -72,6 +72,22 @@ FRONT_END_FIELDS: tuple[tuple[str, str], ...] = (
     ("/api/recovery", "findings"),
     ("/api/recovery", "next_action"),
     ("/api/recovery", "safe_to_resume"),
+    # Deferred work and integrity: the two panels this mission adds.
+    ("/api/discovery", "counts"),
+    ("/api/discovery", "records"),
+    ("/api/discovery", "review"),
+    ("/api/discovery", "cycles"),
+    ("/api/discovery", "stopped_cycles"),
+    ("/api/discovery", "budget"),
+    ("/api/discovery", "note"),
+    ("/api/integrity", "components"),
+    ("/api/integrity", "inspection"),
+    ("/api/integrity", "events"),
+    ("/api/integrity", "incidents"),
+    ("/api/integrity", "enforcement"),
+    ("/api/integrity", "snapshots"),
+    ("/api/integrity", "frozen"),
+    ("/api/integrity", "note"),
     ("/api/memory", "records"),
     ("/api/memory", "duplicates"),
     ("/api/memory", "stats"),
@@ -192,6 +208,88 @@ class ViewerContractTests(LiviumTestCase):
             self.assertNotIn(forbidden, source)
         with self.assertRaises(urllib.error.HTTPError):
             urllib.request.urlopen(self.base + "/api/promote", timeout=15)
+
+    # -- deferred work and integrity, from real state ----------------------
+    def test_deferred_work_endpoint_reads_the_queue_not_a_stub(self) -> None:
+        from livium.discovery import DiscoveryQueue
+
+        payload = self.get("/api/discovery")
+        self.assertEqual(payload["records"], [], "an empty queue is reported as empty")
+        queue = DiscoveryQueue(self.state.agent.store, max_depth=2)
+        record, action = queue.capture(title="the viewer should see this",
+                                      observation="a real record, written by the real queue",
+                                      confidence=0.7)
+        self.assertEqual(action, "created")
+        payload = self.get("/api/discovery")
+        self.assertEqual(payload["counts"].get("pending", 0)
+                         + payload["counts"].get("ready", 0), 1)
+        self.assertEqual([r["id"] for r in payload["records"]], [record.id])
+        self.assertEqual(payload["records"][0]["provenance"], "agent_observation")
+        # The ranking ships with its reasons: a score without its terms is a number
+        # nobody can argue with.
+        self.assertEqual([entry["record"]["id"] for entry in payload["review"]], [record.id])
+        self.assertTrue(payload["review"][0]["reasons"])
+        self.assertTrue(payload["note"])
+        detail = self.get(f"/api/discovery/{record.id}")
+        self.assertEqual(detail["record"]["title"], "the viewer should see this")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.base + "/api/discovery/999999", timeout=15)
+        self.assertEqual(caught.exception.code, 404)
+
+    def test_integrity_endpoint_reports_the_watched_set_and_the_record(self) -> None:
+        payload = self.get("/api/integrity")
+        self.assertEqual(len(payload["components"]), 12,
+                         "the twelve components the policy names")
+        tiers = {component["tier"] for component in payload["components"]}
+        self.assertEqual(tiers, {"governance", "enforcement", "instructions"},
+                         "the policy's own entries; 'operational' is the tier a file gets "
+                         "when configuration protects it and the policy does not name it")
+        self.assertIn(payload["inspection"]["status"], ("ok", "changed", "unbaselined",
+                                                        "missing", "tampered"))
+        self.assertEqual(payload["incidents"], [])
+        self.assertEqual(payload["enforcement"]["unresolved_detections"], [])
+        # Reading the panel is not a security event. On a home with no baseline the
+        # inspection reports `unbaselined`, and a route that recorded that on every poll
+        # would fill the append-only table with the viewer's own refresh timer.
+        first = len(payload["events"])
+        self.assertEqual(len(self.get("/api/integrity")["events"]), first)
+        self.assertFalse(payload["frozen"]["frozen"])
+        self.assertTrue(payload["note"])
+        # A run of the real service writes a record, and the route reports it.
+        from livium.integrity import Integrity
+
+        integrity = Integrity(self.state.agent.config, self.state.agent.store,
+                              self.state.agent.engine)
+        integrity.inspect(detection="test")
+        payload = self.get("/api/integrity")
+        self.assertTrue(payload["events"], "the detection is in the record the API returns")
+
+    def test_a_file_protected_only_by_configuration_is_watched_and_says_so(self) -> None:
+        victim = self.home.dir / "deployment-rules.py"
+        victim.write_text("RULE = 1\n", encoding="utf-8")
+        # self.home.config, not self.config: setUp assigns the *result* of config() to
+        # self.config, so the method is shadowed by the object it returned.
+        config = self.home.config(LIVIUM_EXTRA_PROTECTED_PATHS=str(victim))
+        from livium.integrity import Integrity
+        from livium.store import Store
+
+        store = Store(config.paths.db)
+        self.addCleanup(store.close)
+        integrity = Integrity(config, store)
+        entry = [c for c in integrity.components() if c.path == victim.resolve()]
+        self.assertTrue(entry, "a configured path is watched even with no policy entry")
+        self.assertEqual(entry[0].tier, "operational")
+        self.assertIn("configur", entry[0].why.lower(),
+                      "and the record says why it is protected: configuration, not policy")
+
+    def test_the_new_routes_are_read_only(self) -> None:
+        """Transitions, approvals and recovery are CLI-only, human-attributed controls."""
+
+        source = (REPO_ROOT / "livium" / "server.py").read_text(encoding="utf-8")
+        post_body = source[source.index("def do_POST"):]
+        for forbidden in ("/api/discovery", "/api/integrity"):
+            self.assertNotIn(forbidden, post_body,
+                             f"{forbidden} must not be reachable by POST")
 
     def test_recovery_endpoint_reports_an_honest_empty_state(self) -> None:
         payload = self.get("/api/recovery")

@@ -49,7 +49,7 @@ Livium's agent runtime needs a model to drive it. Everything *around* the model 
 independently runnable and testable:
 
 ```bash
-python3 -m unittest discover -s tests -t tests      # 289 tests, ~23s, no network
+python3 -m unittest discover -s tests -t tests      # 358 tests, ~35s, no network
 python3 demos/run_demonstrations.py                 # the six mandatory demonstrations
 python3 demos/run_mission_demos.py --approve-as "Your Name"   # the mission demonstrations
 ```
@@ -170,13 +170,18 @@ Run `python3 -m livium doctor --json` for the complete effective configuration.
 ## Honest status
 
 Implemented and verified: task loop, tools, permissions, memory, context, recovery,
-verification, capability lifecycle, guardian controls, viewer, HTTP API, 353 automated
+verification, capability lifecycle, guardian controls, viewer, HTTP API, 358 automated
 tests, deterministic step routing, selective tool exposure, the per-task learning
 ledger, human-approved operations that run exactly once per decision, an append-only
 integrity record with an enforced review/approval/recovery workflow, and a deferred
 discovery queue whose follow-up investigations run as their own tasks on a budget that is
 charged before each call, so a stopped investigation is recorded as stopped rather than
 concluded.
+
+The viewer and the API show that state rather than describing it: `/api/discovery` returns
+the queue and the ranking *with its reasons*, `/api/integrity` returns the watched set, the
+inspection, the append-only record and the enforcement history. Both are read-only; the
+human-attributed operations stay on the CLI.
 
 The integrity claims are behavioural, not documentary: `livium integrity verify` runs
 eleven probes in a separate interpreter against a copy of the tree, and a candidate that

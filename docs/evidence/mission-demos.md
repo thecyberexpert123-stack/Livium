@@ -56,7 +56,7 @@ the capability was found by requirement words, its declared interface was loaded
       "word_count"
     ],
     "test_exit_code": 0,
-    "test_duration_ms": 76,
+    "test_duration_ms": 73,
     "network_isolated": null
   },
   "search_matches": [
@@ -165,7 +165,7 @@ the write was refused as requiring approval, the run stopped instead of retrying
         "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-release-m3/restricted/release.md\",\"purpose\":\"the release file\"}",
         "reason": "write needs approval: /tmp/livium-release-m3/restricted/release.md is inside an approval root (/tmp/livium-release-m3/restricted). A human decides, not the agent; see `livium approvals`.",
         "status": "pending",
-        "created_at": "2026-10-15T09:06:48+00:00",
+        "created_at": "2026-10-15T09:11:09+00:00",
         "decided_at": null,
         "decided_by": null,
         "note": null
@@ -234,7 +234,7 @@ a killed process left one unconfirmed side effect; the resumed run established i
       "tool": "write_file",
       "determination": "confirmed_complete",
       "detail": "/tmp/livium-release-m3/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
-      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792055208596871730 path=/tmp/livium-release-m3/workspace/interrupted.md"
+      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792055469502189537 path=/tmp/livium-release-m3/workspace/interrupted.md"
     }
   ],
   "intent_rows_after_resume": [
@@ -386,8 +386,8 @@ the task finished complete (verified) through ['execute', 'execute', 'execute', 
       "flagged": "[\"silently\"]",
       "depth": 0,
       "spawned_by": null,
-      "outcome": "investigated as task 959f8d94eab4 and the harness verified the investigation touched real state. The conclusion below is the task's own claim, not a harness finding: the file names no unit anywhere, so the ambiguity is real: 'bolts: 12' could be a count or a measure",
-      "verification_evidence": "task 959f8d94eab4: tools executed read_file, finish_task; verification verified; tools/verification: complete; checks: event 'tool_call' recorded at 2026-10-15T09:06:49+00:00"
+      "outcome": "investigated as task fba352d511b0 and the harness verified the investigation touched real state. The conclusion below is the task's own claim, not a harness finding: the file names no unit anywhere, so the ambiguity is real: 'bolts: 12' could be a count or a measure",
+      "verification_evidence": "task fba352d511b0: tools executed read_file, finish_task; verification verified; tools/verification: complete; checks: event 'tool_call' recorded at 2026-10-15T09:11:10+00:00"
     }
   ],
   "ledger": {
@@ -439,7 +439,7 @@ the task finished complete (verified) through ['execute', 'execute', 'execute', 
       "flagged": [
         "silently"
       ],
-      "source_task": "21a2b5a388d2",
+      "source_task": "ea042ee65b39",
       "spawned_by": null
     }
   ],
@@ -482,7 +482,7 @@ the modification became 1 append-only record(s) and `integrity status` reported 
   "recorded_events": [
     {
       "id": 4,
-      "ts": "2026-10-15T09:06:50+00:00",
+      "ts": "2026-10-15T09:11:11+00:00",
       "event": "change_detected",
       "tier": null,
       "paths": [
@@ -516,7 +516,7 @@ the modification became 1 append-only record(s) and `integrity status` reported 
       "attributable_to": null,
       "tool": null,
       "revision": {
-        "head": "980724346baecddcfed6ebc2832dc48db4fe3c81",
+        "head": "7076f1edbdcff3e67ad0ed6e0463fa70f6051920",
         "working_tree_status": "",
         "last_commit_touching_file": "",
         "note": "git state only; the working tree is not verified by git"
@@ -600,7 +600,7 @@ the task that noticed the observation finished complete (verified) and paid noth
     ],
     "spent": {
       "model_calls": 2,
-      "seconds": 0.037,
+      "seconds": 0.026,
       "steps": 3,
       "tokens": 0
     },

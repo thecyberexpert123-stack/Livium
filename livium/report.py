@@ -273,7 +273,7 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         "promoted by a named human, and used by a fresh agent.",
         "F — controlled rejection: a deliberately broken change fails its tests, promotion is "
         "refused, and the repaired change passes.",
-        (("Mission demonstrations (sections 12): "
+        (("Mission demonstrations (section 12): "
           + "; ".join(f"{r.get('demonstration')} = {r.get('outcome')}"
                       for r in (mission_demos or {}).get("results", []))
           + f" ({mission_age})") if mission_demos else

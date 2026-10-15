@@ -486,11 +486,17 @@ class DiscoveryQueue:
         return updated
 
     # -- reading ----------------------------------------------------------
-    def get(self, discovery_id: int) -> Discovery:
+    def get(self, discovery_id: int) -> Discovery | None:
+        """One record, or ``None`` when there is no such id.
+
+        A lookup that raises turns "that record is gone" into a failed request: the CLI
+        reports it as an unknown id and the viewer answers 404, and both of those read the
+        return value. Callers that need an error for a missing record raise it themselves,
+        where they know what the operation was.
+        """
+
         row = self.store.one("SELECT * FROM discovery WHERE id=?", (int(discovery_id),))
-        if row is None:
-            raise KeyError(f"no such discovery: {discovery_id}")
-        return self._row(row)
+        return None if row is None else self._row(row)
 
     def all(self, *, limit: int = 50, statuses: Sequence[str] | None = None) -> list[Discovery]:
         sql = "SELECT * FROM discovery"

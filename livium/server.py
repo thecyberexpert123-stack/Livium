@@ -24,6 +24,8 @@ from typing import Any
 from .agent import LiviumAgent
 from .capabilities import CapabilityRegistry
 from .config import Config
+from .discovery import DiscoveryQueue
+from .integrity import Integrity
 from .ledger import Ledger
 
 WEB_ROOT = pathlib.Path(__file__).resolve().parent / "web"
@@ -203,6 +205,80 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, report.as_dict())
         if route == "/api/tools":
             return self._json(200, {"tools": agent.tools.specs()})
+        if route == "/api/discovery":
+            queue = DiscoveryQueue(agent.store,
+                                   max_depth=agent.config.limits.followup_max_depth)
+            limit = int((query.get("limit") or ["25"])[0])
+            cycles = [
+                {"task_id": row["task_id"], "ts": row["ts"],
+                 "payload": json.loads(row["payload"] or "{}")}
+                for row in agent.store.events(event_type="discovery_cycle_complete", limit=20)
+            ]
+            stopped = [
+                {"task_id": row["task_id"], "ts": row["ts"],
+                 "payload": json.loads(row["payload"] or "{}")}
+                for row in agent.store.events(event_type="discovery_cycle_stopped", limit=20)
+            ]
+            return self._json(200, {
+                "counts": queue.counts(),
+                # Every record, newest first, and separately the open ones with the score
+                # and the reasons behind their rank -- the ranking is a judgement, so the
+                # API shows its terms rather than only its result.
+                "records": [record.as_dict() for record in queue.all(limit=limit)],
+                "review": [{"record": record.as_dict(), "score": score,
+                            "reasons": reasons}
+                           for record, score, reasons in queue.review(limit=limit)],
+                "cycles": cycles,
+                "stopped_cycles": stopped,
+                "budget": agent.follow_up_budget().report(),
+                "note": ("a discovery is an observation, not an instruction: nothing here "
+                         "executes what a record says. Follow-up investigations run as their "
+                         "own tasks on a budget charged before each call"),
+            })
+        if route.startswith("/api/discovery/"):
+            raw = route[len("/api/discovery/"):]
+            try:
+                record_id = int(raw)
+            except ValueError:
+                return self._json(404, {"error": f"no discovery {raw}"})
+            queue = DiscoveryQueue(agent.store,
+                                   max_depth=agent.config.limits.followup_max_depth)
+            record = queue.get(record_id)
+            if record is None:
+                return self._json(404, {"error": f"no discovery {record_id}"})
+            return self._json(200, {"record": record.as_dict()})
+        if route == "/api/integrity":
+            guardian = agent.guardian
+            # The service, not the summary: guardian.integrity() is a digest comparison
+            # for one moment, and this route reports the record, the policy and the
+            # enforcement history as well.
+            integrity = Integrity(agent.config, agent.store, agent.engine)
+            try:
+                # record=False on purpose: the viewer polls every few seconds, and an
+                # append-only security record filled with polling noise is a record
+                # nobody reads. Detections are recorded where the system acts on them.
+                inspection = integrity.inspect(detection="api", record=False)
+            except Exception as exc:  # an unreadable home is reported, not hidden
+                inspection = {"ok": False, "status": "unavailable",
+                              "error": f"{type(exc).__name__}: {exc}"}
+            snapshot_row = agent.store.one(
+                "SELECT COUNT(*) AS n FROM integrity_snapshot") if agent.store else None
+            return self._json(200, {
+                "components": [
+                    {"path": c.path.name, "tier": c.tier, "group": getattr(c, "group", ""),
+                     "why": getattr(c, "why", "")}
+                    for c in integrity.components()
+                ],
+                "inspection": inspection,
+                "events": integrity.events(limit=int((query.get("limit") or ["25"])[0])),
+                "incidents": integrity.incidents(limit=10),
+                "enforcement": integrity.enforcement_summary(),
+                "snapshots": int((snapshot_row or {"n": 0})["n"]),
+                "frozen": guardian.freeze_status(),
+                "note": ("a detection is not a prevention: the layer notices, attributes, "
+                         "records and freezes. Recovery is offered as restore-and-verify, and "
+                         "only a named human can authorise it"),
+            })
         return self._json(404, {"error": f"no route {route}"})
 
     def do_POST(self) -> None:  # noqa: N802

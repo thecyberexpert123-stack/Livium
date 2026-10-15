@@ -53,6 +53,11 @@ or lost with the context. Nothing from 0.2.0's behaviour was removed.
   verification. A crashed investigation is recorded as postponed, never as an outcome.
 - CLI: `livium discovery list|show|review|update|investigate` and
   `livium integrity status|events|incidents|review|verify|approve|reject|restore`.
+- Viewer panels and two read-only API routes: `/api/discovery` (counts, records, the
+  ranking with its reasons, cycle spend and stop reasons) and `/api/integrity` (watched
+  components with tier and rationale, the inspection, the append-only record, the
+  enforcement history). The poll records nothing: an append-only security table filled
+  with a refresh timer is a table nobody reads.
 
 **One enforced follow-up budget** (`livium/discovery.py`, `livium/agent.py`)
 - `FollowUpBudget` owns the counters, and `spend()` is the callback the runner passes down
@@ -125,7 +130,7 @@ or lost with the context. Nothing from 0.2.0's behaviour was removed.
 
 ### Verified
 
-- `python3 -m unittest discover -s tests -t tests` — **353 tests, OK** (24 modules).
+- `python3 -m unittest discover -s tests -t tests` — **358 tests, OK** (24 modules).
 - `livium integrity verify` — 11/11 probes pass in 0.13 s; a candidate that stops the
   policy module watching its components fails 2 of them and is recorded as
   `enforcement_verification_failed`.
