@@ -123,6 +123,21 @@ class LimitConfig:
     max_command_seconds: float = 60.0
     max_tool_output_bytes: int = 30000
     max_file_write_bytes: int = 400_000
+    #: Deferred discovery: what one follow-up cycle may spend after a task is done.
+    #: Every one of these is checked before an investigation starts, and stopping
+    #: leaves the queue resumable rather than half-done (see livium.discovery).
+    followup_enabled: bool = True
+    followup_max_items: int = 2
+    followup_max_model_calls: int = 6
+    followup_max_steps: int = 6
+    followup_max_seconds: float = 120.0
+    #: A discovery found *while investigating another* enters the queue at depth+1.
+    #: Past this depth it is recorded but not investigated, which is what stops the
+    #: chain from becoming unbounded recursive work.
+    followup_max_depth: int = 2
+    #: Token ceiling for a cycle. Reported as an estimate limit unless the provider
+    #: reported usage, in which case the real counts are used and the report says so.
+    followup_max_tokens: int = 20000
 
 
 @dataclasses.dataclass(frozen=True)
@@ -231,6 +246,13 @@ class Config:
         limits = LimitConfig(
             max_steps=_env_int("LIVIUM_MAX_STEPS", 12),
             max_retries_per_tool=_env_int("LIVIUM_MAX_RETRIES_PER_TOOL", 2),
+            followup_enabled=_env_bool("LIVIUM_FOLLOWUP_ENABLED", True),
+            followup_max_items=_env_int("LIVIUM_FOLLOWUP_MAX_ITEMS", 2),
+            followup_max_model_calls=_env_int("LIVIUM_FOLLOWUP_MAX_MODEL_CALLS", 6),
+            followup_max_steps=_env_int("LIVIUM_FOLLOWUP_MAX_STEPS", 6),
+            followup_max_seconds=float(_env("LIVIUM_FOLLOWUP_MAX_SECONDS", "120") or 120),
+            followup_max_depth=_env_int("LIVIUM_FOLLOWUP_MAX_DEPTH", 2),
+            followup_max_tokens=_env_int("LIVIUM_FOLLOWUP_MAX_TOKENS", 20000),
             max_tool_calls=_env_int("LIVIUM_MAX_TOOL_CALLS", 40),
             max_seconds=float(_env_int("LIVIUM_MAX_SECONDS", 900)),
             max_command_seconds=float(_env_int("LIVIUM_MAX_COMMAND_SECONDS", 60)),
@@ -265,18 +287,36 @@ class Config:
         # plus the instructions it operates under. The agent's tools cannot write
         # them, and the guardian hashes them, so an edit is detected rather than
         # trusted. See docs/LIMITATIONS.md section 3 for what this does not cover.
+        # The write refusal covers the components whose unauthorised change could
+        # weaken governance or enforcement. The policy that explains why each one is
+        # here -- what may change, who authorises it, how the change is verified --
+        # lives in livium/integrity.py, next to the mechanism that uses it. Ordinary
+        # feature code is reviewed through git like any other work, and is not
+        # write-refused: protecting everything equally protects nothing in particular.
         protected = (
             paths.prompts,
             (REPO_ROOT / "AGENTS.md").resolve(),
             (REPO_ROOT / "livium" / "permissions.py").resolve(),
             (REPO_ROOT / "livium" / "guardian.py").resolve(),
+            (REPO_ROOT / "livium" / "integrity.py").resolve(),
+            (REPO_ROOT / "livium" / "approvals.py").resolve(),
             (REPO_ROOT / "livium" / "config.py").resolve(),
             (REPO_ROOT / "livium" / "execution.py").resolve(),
+            (REPO_ROOT / "livium" / "tools.py").resolve(),
+            (REPO_ROOT / "livium" / "verification.py").resolve(),
         )
 
         extra_write = tuple(
             pathlib.Path(p).expanduser().resolve()
             for p in _env_list("LIVIUM_EXTRA_WRITE_ROOTS", ())
+        )
+        #: Files this deployment refuses to let the agent write, on top of the
+        #: enforcement surface above. A component protected only this way is still
+        #: watched and still refused; what it lacks is a written rationale, and
+        #: livium.integrity says so in the record instead of borrowing one.
+        extra_protected = tuple(
+            pathlib.Path(p).expanduser().resolve()
+            for p in _env_list("LIVIUM_EXTRA_PROTECTED_PATHS", ())
         )
 
         perms = PermissionConfig(
@@ -299,7 +339,7 @@ class Config:
                 ),
             ),
             network_allowlist=_env_list("LIVIUM_NETWORK_ALLOWLIST", ()),
-            protected_paths=protected,
+            protected_paths=protected + extra_protected,
             # Consequential-but-legitimate operations. Empty by default: nothing is
             # approvable until an operator says what is. An approval is a row a human
             # writes; the model cannot create one (see livium.approvals).

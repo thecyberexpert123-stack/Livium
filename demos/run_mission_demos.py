@@ -19,6 +19,18 @@ M5  experience reuse         -- a later, separate process reuses a verified expe
 M6  token accounting         -- reported usage is recorded as actual; missing usage stays
                                 null and is never replaced by an estimate
 
+And the two scenarios this mission adds:
+
+M7  deferred discovery       -- a task notices something that is not the task, captures it,
+                                finishes and is verified, and only then is the observation
+                                evaluated -- as its own bounded task with its own task id
+M8  the human side of the queue -- the queue is read, ranked and decided through the CLI in a
+                                separate process, including a transition the table refuses
+M9  integrity response       -- a protected file is modified, the modification becomes an
+                                append-only record, a structural review runs, an
+                                unattributable recovery is refused, and a named human
+                                recovery restores the baselined bytes and re-hashes them
+
 Nothing here claims to prove model quality. Model *replies* come from the scripted
 test double and every record says so; the router, permission engine, store, memory,
 verifier, ledger, approval queue and subprocess isolation are the real ones. Where a
@@ -502,6 +514,179 @@ class MissionDemos:
              "model": "usage-reporting test double (no real provider is reachable here)"})
 
     # -- report -----------------------------------------------------------
+    def cli(self, *args: str, **env_extra: str) -> subprocess.CompletedProcess:
+        """The human path, in a genuinely separate process against the same database."""
+
+        return subprocess.run(
+            [sys.executable, "-m", "livium.cli", *args],
+            env=self.env(**env_extra), capture_output=True, text=True, timeout=300,
+            cwd=str(REPO_ROOT),
+        )
+
+    # -- M7 deferred discovery --------------------------------------------
+    def m7_deferred_discovery(self) -> None:
+        self.banner("M7 — an observation captured during a task, evaluated after it")
+        config = self.config()
+        config.ensure_dirs()
+        inventory = config.paths.workspace / "inventory.txt"
+        inventory.write_text("bolts: 12\nnuts: 30\n", encoding="utf-8")
+        agent = self.agent(script=[
+            {"tool_calls": [{"name": "read_file", "arguments": {
+                "path": str(inventory), "purpose": "count the parts"}}]},
+            {"tool_calls": [{"name": "record_discovery", "arguments": {
+                "title": "inventory.txt does not say what its numbers mean",
+                "observation": "The file stores bare integers ('bolts: 12'). Nothing in it "
+                               "states whether that is a count, a weight or a length.",
+                "why_it_matters": "Any total computed from it is silently ambiguous.",
+                "confidence": 0.7, "uncertainty": "Only this one file has been read.",
+                "effort_estimate": "small", "risk": "low", "from_content": True,
+                "evidence": "read_file workspace/inventory.txt"}}]},
+            {"tool_calls": [{"name": "finish_task", "arguments": {
+                "summary": "read the inventory and reported the part counts",
+                "status": "complete"}}]},
+            # the follow-up investigation is a second task: its replies come next
+            {"tool_calls": [{"name": "read_file", "arguments": {
+                "path": str(inventory),
+                "purpose": "check whether a unit is named anywhere in the file"}}]},
+            {"tool_calls": [{"name": "finish_task", "arguments": {
+                "summary": "the file names no unit anywhere, so the ambiguity is real: "
+                           "'bolts: 12' could be a count or a measure",
+                "status": "complete"}}]},
+        ])
+        agent.start()
+        agent.guardian.record_baseline(approved_by="demonstration setup", force=True)
+        run = agent.run_task("report how many bolts the inventory holds",
+                             [{"kind": "file_exists", "path": str(inventory)}])
+        routes = [d["decision"] for d in run.route_decisions]
+        rows = [dict(r) for r in agent.store.query(
+            "SELECT id, status, title, provenance, flagged, depth, spawned_by, outcome,"
+            " verification_evidence FROM discovery ORDER BY id")]
+        ledger = dict(agent.store.one(
+            "SELECT discoveries_captured, followups_investigated, model_calls, tools_executed,"
+            " verification_state FROM ledger ORDER BY id DESC LIMIT 1") or {})
+        events = [row["type"] for row in agent.store.events(limit=100)
+                  if str(row["type"]).startswith("discovery")]
+        agent.close()
+
+        completed = [r for r in rows if r["status"] == "completed"]
+        outcome = ("verified" if (run.status == "complete"
+                                  and routes[-1:] == ["evaluate_discoveries"]
+                                  and ledger.get("discoveries_captured") == 1
+                                  and ledger.get("followups_investigated") == 1
+                                  and completed) else "failed")
+        self.record(
+            "M7 deferred discovery", outcome,
+            f"the task finished {run.status} ({run.verification['state']}) through {routes}; "
+            f"one observation was captured while it ran and the queue was evaluated after it "
+            f"was verified; the follow-up ran as its own task and closed "
+            f"{completed[0]['status'] if completed else 'without a conclusion'} with the "
+            f"harness's evidence attached",
+            {"task_status": run.status, "verification": run.verification,
+             "route_decisions": routes, "discoveries": rows, "ledger": ledger,
+             "discovery_events": events,
+             "model_note": "replies from the scripted test double; the queue, the follow-up "
+                           "task, its verification and the ledger are real code paths"})
+
+    # -- M8 the human side-------------------------------------------------
+    def m8_queue_workflow(self) -> None:
+        self.banner("M8 — the human side of the queue, through the CLI")
+        from livium.discovery import DiscoveryQueue
+        from livium.store import Store
+
+        config = self.config()
+        config.ensure_dirs()
+        store = Store(config.paths.db)
+        queue = DiscoveryQueue(store, max_depth=config.limits.followup_max_depth)
+        record, action = queue.capture(
+            title="the demonstration needs something in the queue",
+            observation="Recorded through the real queue API so the CLI has a record to "
+                        "read and move.",
+            why_it_matters="It gives M8 a real row rather than a fabricated one.",
+            confidence=0.4, source_task="demo-m8", provenance="agent_observation")
+        record_id = record.id
+        store.close()
+
+        listed = self.cli("--json", "discovery", "list")
+        review = self.cli("--json", "discovery", "review")
+        legal = self.cli("--json", "discovery", "update", str(record_id), "investigating",
+                         "--note", "a human is looking at this now")
+        # completing needs verification evidence, so this move is in the CLI's vocabulary
+        # and still refused by the queue itself -- which is the guard worth showing.
+        illegal = self.cli("discovery", "update", str(record_id), "completed",
+                           "--note", "declaring it done without evidence")
+        records = json.loads(listed.stdout or "[]")
+        counts = json.loads(review.stdout or "{}").get("counts", {})
+
+        outcome = ("verified" if listed.returncode == 0 and legal.returncode == 0
+                   and illegal.returncode != 0 and records else "failed")
+        self.record(
+            "M8 queue workflow", outcome,
+            f"`discovery list` returned {len(records)} record(s) and `discovery review` reported "
+            f"{counts.get('open', 0)} open item(s); a legal transition was accepted and an "
+            f"illegal one was refused with: {(illegal.stderr or '').strip()[:90]}",
+            {"list_exit": listed.returncode, "review_exit": review.returncode,
+             "records": records[:5], "counts": counts,
+             "legal_transition_exit": legal.returncode,
+             "illegal_transition_exit": illegal.returncode,
+             "illegal_transition_message": (illegal.stderr or "").strip()[:300],
+             "note": "the CLI runs in a separate process against the same durable database"})
+
+    # -- M9 integrity response --------------------------------------------
+    def m9_integrity_response(self) -> None:
+        self.banner("M9 — modification, record, review, refusal, verified recovery")
+        import hashlib
+
+        victim = self.home / "rules.py"
+        victim.write_text("RULE = 'original'\n", encoding="utf-8")
+        extra = {"LIVIUM_EXTRA_PROTECTED_PATHS": str(victim)}
+
+        baseline = self.cli("--json", "guardian", "baseline", "--approved-by",
+                            "demonstration setup", "--force", **extra)
+        victim.write_text("RULE = 'weakened'\n", encoding="utf-8")
+        status = self.cli("--json", "integrity", "status", **extra)
+        after = json.loads(status.stdout or "{}")
+        events = json.loads(self.cli("--json", "integrity", "events", "--kind",
+                                     "change_detected", **extra).stdout or "[]")
+        reviewed = json.loads(self.cli("--json", "integrity", "review", str(victim),
+                                       **extra).stdout or "[]")
+        anonymous = self.cli("integrity", "restore", str(victim), "--approved-by", "anonymous",
+                             "--reason", "just fix it", **extra)
+
+        recovery = None
+        if self.approve_as:
+            retrieved = self.cli("--json", "integrity", "restore", str(victim),
+                                 "--approved-by", self.approve_as,
+                                 "--reason", "the recorded content is the intended one",
+                                 **extra)
+            payload = json.loads(retrieved.stdout or "{}")
+            digest_now = hashlib.sha256(victim.read_bytes()).hexdigest()
+            recovery = {"exit": retrieved.returncode, "payload": payload,
+                        "digest_on_disk_after": digest_now,
+                        "digest_matches": payload.get("digest") == digest_now}
+
+        outcome = ("verified" if (json.loads(baseline.stdout or "{}").get("baseline_files")
+                                  and events and reviewed and anonymous.returncode != 0
+                                  and (not self.approve_as or (recovery or {}).get(
+                                      "digest_matches")))
+                   else "failed")
+        self.record(
+            "M9 integrity response", outcome,
+            f"the modification became {len(events)} append-only record(s) and `integrity status` "
+            f"reported {after.get('status')} with {len(after.get('changed') or [])} changed "
+            f"file(s); the structural review returned {len(reviewed)} finding(s); an "
+            f"unattributable recovery was refused with: "
+            f"{(anonymous.stderr or '').strip()[:80]}"
+            + (f"; the named recovery restored the file and the digest on disk matches "
+               f"({(recovery or {}).get('digest_matches')})" if self.approve_as
+               else "; no named recovery was attempted (run with --approve-as to see it)"),
+            {"baseline": json.loads(baseline.stdout or "{}"),
+             "status_after": {"status": after.get("status"), "changed": after.get("changed"),
+                              "exit": status.returncode},
+             "recorded_events": events[:3], "review": reviewed[:2],
+             "anonymous_recovery_refused": {"exit": anonymous.returncode,
+                                            "message": (anonymous.stderr or "").strip()[:200]},
+             "named_recovery": recovery})
+
     def write_report(self, json_path: pathlib.Path) -> pathlib.Path:
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps({"results": self.results,
@@ -541,6 +726,8 @@ def main() -> int:
         "M1": demos.m1_selective_retrieval, "M2": demos.m2_capability_discovery,
         "M3": demos.m3_failure_changes_the_next_action, "M4": demos.m4_resume_after_interruption,
         "M5": demos.m5_experience_reuse, "M6": demos.m6_token_accounting,
+        "M7": demos.m7_deferred_discovery, "M8": demos.m8_queue_workflow,
+        "M9": demos.m9_integrity_response,
     }
     for name, function in catalogue.items():
         if wanted and name not in wanted:

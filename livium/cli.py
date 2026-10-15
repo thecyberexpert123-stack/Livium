@@ -16,6 +16,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import time
 import textwrap
 from typing import Any, Sequence
 
@@ -24,7 +25,9 @@ from .agent import LiviumAgent
 from .approvals import ApprovalQueue
 from .capabilities import CapabilityError, CapabilityRegistry
 from .config import Config, ConfigError
+from .discovery import DiscoveryError, DiscoveryQueue, FollowUpBudget, FollowUpCycle, score
 from .guardian import GrowthGuardian
+from .integrity import Integrity
 from .memory import Memory
 from .models import CredentialMissing, ModelError
 from .permissions import PermissionEngine
@@ -435,8 +438,12 @@ def cmd_guardian(args: argparse.Namespace, config: Config) -> int:
     try:
         action = args.guardian_action
         if action == "status":
+            # Through watch(), not integrity(): a status check that finds a tamper is a
+            # detection, and a detection has to leave a record. Reading the digests and
+            # printing "tampered" would lose the fact the moment the terminal closes.
+            report = guardian.watch(trigger="livium guardian status")
             payload = {
-                "integrity": guardian.integrity().as_dict(),
+                "integrity": report.as_dict(),
                 "frozen": guardian.freeze_status(),
                 "protected_files": [str(p) for p in guardian.protected_files()],
                 "baseline_recorded": len(guardian.load_baseline()),
@@ -473,6 +480,145 @@ def cmd_guardian(args: argparse.Namespace, config: Config) -> int:
             return 0
         print("unknown guardian action", file=sys.stderr)
         return 2
+    finally:
+        store.close()
+
+
+def cmd_discovery(args: argparse.Namespace, config: Config) -> int:
+    """The human side of deferred work: look, re-rank, decide, investigate."""
+
+    store = Store(config.paths.db)
+    try:
+        queue = DiscoveryQueue(store, max_depth=config.limits.followup_max_depth)
+        action = args.discovery_action
+        if action == "list":
+            records = queue.all(limit=args.limit, statuses=tuple(args.status or ()) or None)
+            _print([{"id": r.id, "status": r.status, "title": r.title,
+                     "confidence": r.confidence, "risk": r.risk, "depth": r.depth,
+                     "provenance": r.provenance, "flagged": r.flagged,
+                     "source_task": r.source_task, "spawned_by": r.spawned_by}
+                    for r in records], args.json)
+            return 0
+        if action == "show":
+            record = queue.get(args.id)
+            if record is None:
+                print(f"no discovery with id {args.id}", file=sys.stderr)
+                return 2
+            _print({"record": record.as_dict(), "render": record.render(full=True)}, args.json)
+            return 0
+        if action == "review":
+            ranked = queue.eligible(limit=args.limit)
+            _print({
+                "ready": [{"id": r.id, "title": r.title, "score": score(r)[0],
+                           "why": score(r)[1], "confidence": r.confidence,
+                           "risk": r.risk, "effort": r.effort_estimate,
+                           "touches_protected": r.touches_protected} for r in ranked],
+                "counts": queue.counts(),
+                "budget": {"items_per_cycle": config.limits.followup_max_items,
+                           "model_calls": config.limits.followup_max_model_calls,
+                           "steps": config.limits.followup_max_steps,
+                           "seconds": config.limits.followup_max_seconds,
+                           "max_depth": config.limits.followup_max_depth},
+                "note": ("items are ranked, not chosen: a cycle takes the best few inside the "
+                         "budget and stops when it runs out, leaving the rest queued"),
+            }, args.json)
+            return 0
+        if action == "update":
+            record = queue.transition(args.id, args.status, note=args.note,
+                                      evidence=args.evidence, by=args.by or "human")
+            _print({"id": record.id, "status": record.status, "note": args.note}, args.json)
+            return 0
+        if action == "investigate":
+            # A human asking for one investigation now. It runs as a real task through the
+            # same loop and tools; nothing about it is special except who asked.
+            from .agent import LiviumAgent
+
+            agent = LiviumAgent(config)
+            try:
+                agent.start()
+                cycle = FollowUpCycle(queue, budget=FollowUpBudget(
+                    max_items=1, max_seconds=config.limits.followup_max_seconds,
+                    max_model_calls=config.limits.followup_max_model_calls,
+                    max_steps=config.limits.followup_max_steps,
+                    max_tokens=config.limits.followup_max_tokens,
+                ))
+                results = cycle.run(agent._followup_runner, clock=time.monotonic, only=args.id)
+                _print({"results": [r.as_dict() for r in results],
+                        "stopped_because": cycle.last_stop_reason,
+                        "counts": queue.counts()}, args.json)
+                return 0
+            finally:
+                agent.close()
+        print("unknown discovery action", file=sys.stderr)
+        return 2
+    except DiscoveryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    finally:
+        store.close()
+
+
+def cmd_integrity(args: argparse.Namespace, config: Config) -> int:
+    """Detection, review, verification and recovery, for a human operator."""
+
+    store = Store(config.paths.db)
+    engine = PermissionEngine(config)
+    integrity = Integrity(config, store, engine)
+    try:
+        action = args.integrity_action
+        if action == "status":
+            view = integrity.inspect(detection="livium integrity status", record=True)
+            _print({
+                "status": view["status"], "ok": view["ok"], "checked": view["checked"],
+                "changed": view["changed"], "missing": view["missing"],
+                "unbaselined": view["unbaselined"],
+                "components": view["results"],
+                "note": ("a tamper found here is written to the append-only integrity record, "
+                         "not only printed"),
+            }, args.json)
+            return 0 if view["ok"] else 1
+        if action == "events":
+            _print(integrity.events(limit=args.limit, event=args.kind), args.json)
+            return 0
+        if action == "incidents":
+            _print({"incidents": integrity.incidents(limit=args.limit),
+                    "unresolved": integrity.enforcement_summary()}, args.json)
+            return 0
+        if action == "review":
+            if args.path:
+                paths = [pathlib.Path(args.path)]
+            else:
+                view = integrity.inspect(record=False)
+                paths = [pathlib.Path(item["path"]) for item in view["results"]
+                         if item["state"] in ("changed", "missing")]
+            _print([integrity.review_change(p, proposed_by=args.by or "unknown",
+                                            reason=args.reason or "") for p in paths], args.json)
+            return 0
+        if action == "verify":
+            result = integrity.verify_enforcement(run_tests=bool(args.tests))
+            _print(result, args.json)
+            return 1 if not result["ok"] else 0
+        if action == "approve":
+            result = integrity.approve_change(
+                pathlib.Path(args.path), approved_by=args.approved_by,
+                reason=args.reason, acknowledge=tuple(args.acknowledge or ()),
+                run_tests=not args.no_tests)
+            _print(result, args.json)
+            return 0 if result.get("approved") else 1
+        if action == "reject":
+            _print(integrity.reject_change(pathlib.Path(args.path),
+                                           rejected_by=args.by, reason=args.reason), args.json)
+            return 0
+        if action == "restore":
+            result = integrity.restore(pathlib.Path(args.path), approved_by=args.approved_by,
+                                       reason=args.reason)
+            _print(result, args.json)
+            return 0 if result.get("restored") else 1
+        print("unknown integrity action", file=sys.stderr)
+        return 2
+    except PermissionError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 4
     finally:
         store.close()
 
@@ -671,6 +817,66 @@ def build_parser() -> argparse.ArgumentParser:
     propose_change.add_argument("--occurrences", type=int, default=1)
     propose_change.add_argument("--previous-digest")
 
+    discovery = sub.add_parser(
+        "discovery", help="deferred observations: review the queue, decide, investigate one")
+    discovery_sub = discovery.add_subparsers(dest="discovery_action", required=True)
+    d_list = discovery_sub.add_parser("list")
+    d_list.add_argument("--status", action="append",
+                        help="only this status (repeatable): pending|ready|investigating|"
+                             "blocked|completed|rejected|postponed")
+    d_list.add_argument("--limit", type=int, default=20)
+    d_show = discovery_sub.add_parser("show")
+    d_show.add_argument("id", type=int)
+    d_review = discovery_sub.add_parser("review", help="what is ready, ranked, with why")
+    d_review.add_argument("--limit", type=int, default=10)
+    d_update = discovery_sub.add_parser("update", help="move a record's state")
+    d_update.add_argument("id", type=int)
+    d_update.add_argument("status", choices=["ready", "investigating", "blocked",
+                                             "completed", "rejected", "postponed"])
+    d_update.add_argument("--note", required=True, help="why; required, and recorded")
+    d_update.add_argument("--evidence")
+    d_update.add_argument("--by", help="who is making the change (default: human)")
+    d_inv = discovery_sub.add_parser("investigate",
+                                     help="run one investigation now, as its own bounded task")
+    d_inv.add_argument("id", type=int)
+
+    integrity = sub.add_parser(
+        "integrity", help="protected components: status, review, verify, approve, restore")
+    integrity_sub = integrity.add_subparsers(dest="integrity_action", required=True)
+    integrity_sub.add_parser("status")
+    i_events = integrity_sub.add_parser("events")
+    i_events.add_argument("--kind", help="only this event type")
+    i_events.add_argument("--limit", type=int, default=30)
+    i_inc = integrity_sub.add_parser("incidents")
+    i_inc.add_argument("--limit", type=int, default=20)
+    i_review = integrity_sub.add_parser("review",
+                                        help="structural review of changed components")
+    i_review.add_argument("path", nargs="?", help="one file; default is every changed component")
+    i_review.add_argument("--by", help="who is proposing the change")
+    i_review.add_argument("--reason")
+    i_verify = integrity_sub.add_parser(
+        "verify", help="run the enforcement probes in a separate interpreter")
+    i_verify.add_argument("--tests", action="store_true",
+                          help="also run the repository test suite in the copy")
+    i_approve = integrity_sub.add_parser(
+        "approve", help="review, verify, then re-baseline one component")
+    i_approve.add_argument("path")
+    i_approve.add_argument("--approved-by", required=True)
+    i_approve.add_argument("--reason", required=True)
+    i_approve.add_argument("--acknowledge", action="append",
+                           help="acknowledge a weakening finding by its index or text")
+    i_approve.add_argument("--no-tests", action="store_true",
+                           help="skip the tests (the probes still run)")
+    i_reject = integrity_sub.add_parser("reject", help="record a refusal; the file is untouched")
+    i_reject.add_argument("path")
+    i_reject.add_argument("--by", required=True)
+    i_reject.add_argument("--reason", required=True)
+    i_restore = integrity_sub.add_parser(
+        "restore", help="put a protected component back to its baselined bytes, verified")
+    i_restore.add_argument("path")
+    i_restore.add_argument("--approved-by", required=True)
+    i_restore.add_argument("--reason", required=True)
+
     selftest = sub.add_parser("selftest", help="run the repository test suite")
     selftest.add_argument("pattern", nargs="*")
     selftest.add_argument("--record", action="store_true",
@@ -697,8 +903,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     handlers = {
         "doctor": cmd_doctor, "run": cmd_run, "resume": cmd_resume, "status": cmd_status,
         "events": cmd_events, "memory": cmd_memory, "capability": cmd_capability,
-        "approvals": cmd_approvals, "guardian": cmd_guardian, "selftest": cmd_selftest, "report": cmd_report,
-        "serve": cmd_serve,
+        "approvals": cmd_approvals, "guardian": cmd_guardian, "selftest": cmd_selftest,
+        "report": cmd_report, "serve": cmd_serve,
+        "discovery": cmd_discovery, "integrity": cmd_integrity,
     }
     try:
         return handlers[args.command](args, config)

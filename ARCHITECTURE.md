@@ -34,6 +34,10 @@ livium/
   tools.py         the tool registry: specs, argument validation, dispatch, side effects
   verification.py  executable acceptance criteria + the honest summary of what passed
   guardian.py      integrity baselines, violation rules, promotion gate, frozen mode
+  integrity.py     the protection policy, the append-only integrity record, snapshots,
+                   structural review, approval, verified recovery, enforcement probes
+  discovery.py     deferred observations: the queue and its transition table, provenance
+                   and untrusted-content flags, the follow-up budget and cycle
   router.py        the deterministic step decision: execute / select capability / retry /
                    investigate / retrieve / verify / persist / request authorization
   ledger.py        one measured row per task: what was used, retried, verified, and
@@ -146,6 +150,54 @@ though ordinary reads cannot: without it, an operation a human authorised could 
 performed but never checked, and every such task would end `not verified` for a reason
 unrelated to the work. The relaxation is one line, confined to paths a human put in the
 configuration, and it returns its reason like every other decision.
+
+### Deferred discovery: the observation is not the task
+
+A task that notices something else worth doing has two bad options -- chase it, and
+derail the work it was asked to do, or drop it. Livium takes neither. `record_discovery`
+is offered on every step, so the observation is captured while it is fresh; the queue is
+durable, so it survives the task and the process; and the *task* continues unchanged. It
+is not a to-do list for the task in progress: the capture tool returns a handle, not an
+instruction, and nothing about the primary task depends on the queue being empty.
+
+What happens to the queue is decided by a router rule that only fires in one state: the
+harness has verified the task's acceptance criteria, the model has asked to finish, and
+there are ready records. It returns `evaluate_discoveries`, which names the queue in the
+task's record and hands it to a follow-up cycle with its own budget.
+
+Investigating an item is a *task*: same loop, same tools, same permission checks, its own
+task id, its own acceptance criterion (it must have touched real state) and its own
+verification. The conclusion a follow-up records is labelled as the task's own claim and
+is stored next to the evidence the harness did verify. When the budget runs out the cycle
+stops, says why, and leaves the rest of the queue ready -- a queue that reopens its own
+items is a queue that never drains.
+
+Provenance is part of the record, not a comment on it. Text read out of a file is stored
+as `observed_content` and flagged; it can be evaluated, and it can never be mistaken for
+an instruction the agent gave itself.
+
+### Integrity: a detection is a record, a recovery is verified
+
+The guardian's job is to notice that a protected component changed. `livium.integrity`
+is what happens next, and its first rule is that noticing is not enough: a detection
+becomes a row in `integrity_event`, which is append-only **by SQLite trigger**. The row
+carries what was seen, the expected state, the policy applied, the decision, who
+authorised it, the evidence, any recovery and its outcome, the residual uncertainty, and
+as much attribution as the evidence supports -- which is often less than a name.
+
+Recovery is never a claim. `restore` rewrites a protected file from the snapshot of its
+baselined digest, atomically, and then hashes what is on disk. If the hash does not match
+the baseline the recovery is recorded as failed and an error is raised; there is no path
+in the code that reports a recovery it did not verify. Approving a change is the mirror
+image: a named human, every weakening finding acknowledged, the behavioural probes
+passing against a copy with the candidate applied -- and only then a re-baseline of that
+single file.
+
+The probes are what make the enforcement claims behavioural. They run in a separate
+interpreter, in their own home, against a copy of the tree, and they tamper with a file
+they own: a check that modified the checkout to test detection would be doing the thing
+it exists to catch. `tests/test_integrity.py` hands the verifier a deliberately weakened
+candidate and asserts that the probes fail, so the probes cannot pass by construction.
 
 ## Data model (SQLite, WAL)
 

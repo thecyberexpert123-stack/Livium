@@ -34,6 +34,7 @@ import pathlib
 from typing import Any
 
 from .config import Config
+from .integrity import INTEGRITY_EVENT_KINDS, Integrity, policy_for, tier_of
 from .memory import Memory
 from .permissions import UNATTRIBUTED_NAMES, PermissionEngine
 from .store import Store, now
@@ -78,23 +79,31 @@ class GrowthGuardian:
         self.engine = engine
         self.store = store
         self.memory = memory
+        #: Policy, snapshots, structural review and the append-only integrity record
+        #: live in livium.integrity. The guardian keeps the public surface it always
+        #: had -- integrity(), watch(), promotion_gate(), record_baseline() -- and
+        #: delegates, so existing callers and tests keep working unchanged.
+        self.integrity_policy = Integrity(config, store, engine)
         self._baseline_digests: dict[str, str] = {}
         self._frozen_reason: str | None = None
         self._unbaselined_warned = False
         self.load_baseline()
 
     # -- protected-file integrity -----------------------------------------
-    def protected_files(self) -> list[pathlib.Path]:
-        """Every file that encodes Livium's instructions or its own boundaries."""
+    def digest(self, path: pathlib.Path) -> str:
+        """The file digest, exposed so callers do not reimplement the same hashing."""
 
-        files: list[pathlib.Path] = []
-        for path in self.engine.protected_files():
-            if path.exists():
-                files.append(path)
-        prompt_dir = self.config.paths.prompts
-        if prompt_dir.exists():
-            files.extend(sorted(p for p in prompt_dir.glob("*.md") if p.is_file()))
-        return sorted(set(files))
+        return self._digest(path)
+
+    def protected_files(self) -> list[pathlib.Path]:
+        """Every file that encodes Livium's instructions or its own boundaries.
+
+        Read from the policy in livium.integrity, so the file that decides what is
+        protected and the file that decides why are the same file.
+        """
+
+        return sorted({component.path for component in self.integrity_policy.components()
+                       if component.path.exists() and component.path.is_file()})
 
     @staticmethod
     def _digest(path: pathlib.Path) -> str:
@@ -133,24 +142,36 @@ class GrowthGuardian:
                 + ". Re-record it deliberately with force=True (CLI: --force) -- this "
                   "replaces the digests that tamper detection is comparing against."
             )
-        with self.store.transaction() as conn:
-            for path in files:
-                conn.execute(
-                    "INSERT INTO guardian_baseline(path, sha256, recorded_at) VALUES(?,?,?) "
-                    "ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256, "
-                    "recorded_at=excluded.recorded_at",
-                    (str(path), self._digest(path), now()),
-                )
+        # Delegated: the same write, plus a snapshot of each file (so a change can be
+        # compared structurally and recovered later) and an integrity event that says
+        # a human did this on purpose.
+        result = self.integrity_policy.protect(approved_by=approved_by, paths=files,
+                                               force=force)
         self.store.append_event(
             "guardian_rebaselined",
             {"approved_by": approved_by, "files": [str(p) for p in files],
              "forced": bool(force), "replaced_digests": replaced},
         )
         self.load_baseline()
-        return {"baseline_files": len(files), "approved_by": approved_by,
+        return {"baseline_files": result["baseline_files"], "approved_by": approved_by,
                 "forced": bool(force), "replaced": len(replaced)}
 
-    def integrity(self) -> IntegrityReport:
+    def inspect(self, *, record: bool = True, detection: str = "guardian",
+                task_id: str | None = None, tool: str | None = None) -> dict[str, Any]:
+        """The policy-aware view: per-path tier, state, why it is protected."""
+
+        return self.integrity_policy.inspect(detection=detection, task_id=task_id,
+                                             tool=tool, record=record)
+
+    def integrity(self, *, record: bool = False) -> IntegrityReport:
+        """Digest comparison, as before. ``record=True`` also writes the event.
+
+        The default stays silent on purpose: ``integrity()`` is called on every command
+        execution, and a security record that is mostly noise is a security record
+        nobody reads. Detections and freezes are recorded by :meth:`watch`, which is
+        called at the same points and knows what was running.
+        """
+
         files = self.protected_files()
         mismatches: list[dict[str, str]] = []
         missing: list[str] = []
@@ -165,6 +186,8 @@ class GrowthGuardian:
             current = self._digest(path)
             if current != recorded:
                 mismatches.append({"path": key, "recorded": recorded, "current": current})
+        if record and (mismatches or missing):
+            self.integrity_policy.inspect(detection="guardian.integrity", record=True)
         if mismatches:
             return IntegrityReport(
                 ok=False, status="tampered",
@@ -212,6 +235,32 @@ class GrowthGuardian:
             self.store.append_event(
                 "guardian_freeze", {"reason": report.detail, "trigger": trigger},
                 task_id=task_id,
+            )
+            # The append-only record: what changed, what was expected, who or what was
+            # running when it was noticed, and how far attribution can honestly go.
+            attribution = self.integrity_policy.attribute(
+                pathlib.Path(report.mismatches[0]["path"])) if report.mismatches else None
+            self.integrity_policy.record_event(
+                "change_detected", tier=None,
+                paths=[pathlib.Path(m["path"]) for m in report.mismatches],
+                observed={"digests": {m["path"]: m["current"] for m in report.mismatches}},
+                expected={"digests": {m["path"]: m["recorded"] for m in report.mismatches}},
+                detection=f"guardian.watch:{trigger}",
+                policy={"action": "the run is frozen; a human must review the change, then "
+                                  "approve it or restore the baselined content"},
+                decision="freeze", evidence={"attribution": attribution},
+                outcome="unauthorised_detected",
+                uncertainty=(attribution or {}).get("uncertainty", ""),
+                task_id=task_id, tool=trigger,
+            )
+            self.integrity_policy.record_event(
+                "run_frozen", tier=None, paths=[pathlib.Path(report.mismatches[0]["path"])],
+                observed={"trigger": trigger}, expected={},
+                detection="guardian.watch",
+                policy={"note": "an agent cannot clear a freeze: only a human re-baselining "
+                                "or restoring does"},
+                decision="frozen", evidence={"reason": report.detail},
+                outcome="frozen", task_id=task_id, tool=trigger,
             )
         elif report.status == "unbaselined" and not self._unbaselined_warned:
             # Warned once per process, not once per command: the condition is a

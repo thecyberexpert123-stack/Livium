@@ -115,6 +115,11 @@ livium memory list|history|duplicates|consolidate|stale
 livium capability list|show|propose|scaffold|test|promote|rollback|reject
 livium approvals [--pending] [--history] | --approve ID --by NAME | --reject ID --by NAME
 livium guardian status|baseline --approved-by NAME|propose-change …
+livium discovery list|show|review|update ID STATUS --note WHY|investigate ID
+livium integrity status|events|incidents|review [PATH]|verify [--tests]
+livium integrity approve PATH --approved-by NAME --reason WHY [--acknowledge FINDING]
+livium integrity reject  PATH --by NAME --reason WHY
+livium integrity restore PATH --approved-by NAME --reason WHY
 livium selftest [--record]        run the repository test suite; --record feeds `livium report`
 livium serve [--port 8787]        HTTP API + live viewer
 ```
@@ -139,6 +144,8 @@ truth). The important ones:
 | `LIVIUM_PROMOTED_DIR` | `livium/promoted` | where promoted capabilities are installed; relative paths resolve under `LIVIUM_HOME` |
 | `LIVIUM_APPROVAL_WRITE_ROOTS` | empty | paths the agent may write **only after a human approves** that specific call |
 | `LIVIUM_APPROVAL_BINARIES` | empty | programs the agent may run only after a human approves that specific call |
+| `LIVIUM_EXTRA_PROTECTED_PATHS` | empty | files this deployment refuses to let the agent write, watched and recorded like the built-in surface |
+| `LIVIUM_FOLLOWUP_ENABLED` / `LIVIUM_FOLLOWUP_MAX_ITEMS` / `_MAX_MODEL_CALLS` / `_MAX_STEPS` / `_MAX_SECONDS` / `_MAX_TOKENS` / `_MAX_DEPTH` | 1 / 2 / 6 / 6 / 120 / 20000 / 2 | what one follow-up cycle may spend, and how deep a chain of observations may go |
 
 Run `python3 -m livium doctor --json` for the complete effective configuration.
 
@@ -154,15 +161,26 @@ Run `python3 -m livium doctor --json` for the complete effective configuration.
 - `.env.example` — every supported setting, checked against the code by a test
 - `docs/evidence/` — recorded output of the demonstrations and the final report
 - `demos/run_demonstrations.py` — re-runs all six demonstrations from a fresh clone
-- `demos/run_mission_demos.py` — the six mission demonstrations (retrieval, discovery,
-  recovery that changes the next action, resume, reuse, token accounting)
+- `demos/run_mission_demos.py` — the mission demonstrations, run for real: selective
+  retrieval, capability discovery, a failure that changes the next action, resume after
+  interruption, reuse across processes, token accounting (M1–M6, and M7 deferred
+  discovery, M8 the queue through the CLI, M9 modification → record → review → refusal →
+  verified recovery)
 
 ## Honest status
 
 Implemented and verified: task loop, tools, permissions, memory, context, recovery,
-verification, capability lifecycle, guardian controls, viewer, HTTP API, 289 automated
+verification, capability lifecycle, guardian controls, viewer, HTTP API, 339 automated
 tests, deterministic step routing, selective tool exposure, the per-task learning
-ledger, and human-approved operations that run exactly once per decision.
+ledger, human-approved operations that run exactly once per decision, an append-only
+integrity record with an enforced review/approval/recovery workflow, and a deferred
+discovery queue whose follow-up investigations run as their own bounded tasks.
+
+The integrity claims are behavioural, not documentary: `livium integrity verify` runs
+eleven probes in a separate interpreter against a copy of the tree, and a candidate that
+weakens a control fails them. Where the layer cannot prevent something — an agent that
+already has OS-level privileges — it detects, attributes, freezes and records instead,
+and `docs/LIMITATIONS.md` says so in those words.
 
 Implemented but **not verified here**: live inference against a real provider
 (no reachable endpoint in the build environment). The HTTP clients are real,

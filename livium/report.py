@@ -411,6 +411,96 @@ def build(config: Config, agent: Any) -> dict[str, Any]:
         "context_reports_sampled": len(exposure)}))
 
 
+    # -- deferred discovery, measured from the queue itself -----------------
+    statuses = {row["status"]: int(row["n"]) for row in store.query(
+        "SELECT status, COUNT(*) AS n FROM discovery GROUP BY status")}
+    ledger_discoveries = store.one(
+        "SELECT COALESCE(SUM(discoveries_captured), 0) AS captured, "
+        "COALESCE(SUM(followups_investigated), 0) AS investigated FROM ledger")
+    cycles = store.events(event_type="discovery_cycle_complete", limit=200)
+    stopped = store.events(event_type="discovery_cycle_stopped", limit=200)
+    cycle_spend = {"model_calls": 0, "steps": 0, "tokens": 0}
+    for row in cycles:
+        try:
+            spent = (json.loads(row["payload"]) or {}).get("spent") or {}
+        except (TypeError, ValueError):
+            continue
+        for key in cycle_spend:
+            cycle_spend[key] += int(spent.get(key) or 0)
+    chains = store.events(event_type="discovery_chain_limit", limit=200)
+    points.append(Point(14, "Deferred discovery: what was noticed but not chased", [
+        (f"Queue: " + (", ".join(f"{name} {count}" for name, count in sorted(statuses.items()))
+                       or "empty")
+         + f"; {len(chains)} record(s) were filed past the chain limit "
+           f"(shape: {config.limits.followup_max_depth}) instead of being queued."),
+        (f"Capture is measured, not reported: the ledger holds "
+         f"{ledger_discoveries['captured'] if ledger_discoveries else 0} captured observation(s) "
+         f"attributed to tasks and {ledger_discoveries['investigated'] if ledger_discoveries else 0} "
+         f"item(s) investigated."),
+        (f"Follow-up cycles completed here: {len(cycles)}, having spent "
+         f"{cycle_spend['model_calls']} model call(s), {cycle_spend['steps']} step(s) and "
+         f"{cycle_spend['tokens']} token(s) that the transport reported; "
+         f"{len(stopped)} cycle(s) stopped inside their budget, leaving the rest of the queue "
+         f"ready and the reason journalled."
+         if cycles or stopped else
+         "No follow-up cycle has run in this home. The budget, the stop-and-resume behaviour and "
+         "the crash-is-not-a-conclusion rule are covered by tests and by demonstration M7."),
+        "An investigation is a real task: its own task id, its own tools and permissions, its own "
+        "acceptance criterion (it must have touched real state) and its own verification. The "
+        "conclusion it reaches is stored as the task's claim, labelled as such, next to the "
+        "evidence the harness verified.",
+        "Not claimed: the ranking is lexical (confidence, evidence, risk, effort) and does not "
+        "learn from outcomes, and a near-duplicate observation can be merged into an earlier "
+        "record. Both are stated in docs/LIMITATIONS.md.",
+    ], {"statuses": statuses, "cycles": len(cycles), "stopped": len(stopped),
+        "cycle_spend": cycle_spend, "chain_limit_events": len(chains),
+        "ledger": dict(ledger_discoveries) if ledger_discoveries else {}}))
+
+    # -- the integrity record, read back from the append-only table ---------
+    from .integrity import Integrity  # local: report.py is imported by the CLI
+
+    integrity_layer = Integrity(config, store, agent.engine)
+    integrity_events = integrity_layer.events(limit=500)
+    event_counts: dict[str, int] = {}
+    for row in integrity_events:
+        event_counts[row["event"]] = event_counts.get(row["event"], 0) + 1
+    tiers: dict[str, int] = {}
+    for component in integrity_layer.components():
+        tiers[component.tier] = tiers.get(component.tier, 0) + 1
+    snapshots = store.one("SELECT COUNT(*) AS n FROM integrity_snapshot")
+    last_verification = next((row for row in integrity_events
+                              if row["event"] in ("enforcement_verified",
+                                                  "enforcement_verification_failed")), None)
+    unresolved = integrity_layer.enforcement_summary()["unresolved_detections"]
+    points.append(Point(15, "Integrity response: what the record holds, and what it does not", [
+        (f"Watched components: {sum(tiers.values())} across "
+         + ", ".join(f"{tier} {count}" for tier, count in sorted(tiers.items()))
+         + f". The write refusal and the watch list are the same set, so the guardian cannot "
+           f"guard less than the engine refuses."),
+        (f"Integrity record: {len(integrity_events)} event(s) in the append-only table "
+         + (f"({', '.join(f'{name} {count}' for name, count in sorted(event_counts.items()))})"
+            if event_counts else "(nothing recorded yet in this home)")
+         + f"; {snapshots['n'] if snapshots else 0} baselined snapshot(s) stored in the database, "
+           f"outside the agent's write authority. UPDATE and DELETE on this table are refused by "
+           f"trigger."),
+        (f"Enforcement probes: last run recorded as {last_verification['event'].replace('_', ' ')} "
+         f"({'verified' if last_verification['event'] == 'enforcement_verified' else 'NOT verified'}) "
+         f"against {len(last_verification.get('evidence', {}).get('probes', []) or [])} probe(s) in a "
+         f"separate interpreter."
+         if last_verification else
+         "Enforcement probes: none recorded in this home yet. `livium integrity verify` runs eleven "
+         "of them in a separate interpreter against a copy of the tree; a candidate that weakens a "
+         "control fails them, and a test asserts that failure."),
+        (f"Unresolved changes in the record: {len(unresolved)}. "
+         if unresolved else "Unresolved changes in the record: none. ")
+        + "A detection is not a prevention: the layer notices, attributes, records and freezes; an "
+          "agent with operating-system privileges is beyond what it can stop, and "
+          "docs/LIMITATIONS.md section 15 says so in those words.",
+    ], {"tiers": tiers, "events": len(integrity_events), "event_counts": event_counts,
+        "snapshots": snapshots["n"] if snapshots else 0,
+        "last_verification": last_verification["event"] if last_verification else None,
+        "unresolved": len(unresolved)}))
+
     return {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "repo": str(REPO_ROOT),

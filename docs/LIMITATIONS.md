@@ -175,3 +175,63 @@ the denial is journalled with its reason, and the run continues or stops accordi
 the router. It does not prove the *permission rules themselves* are correct -- a rule
 that wrongly denies something is still enforced, and the specification asks for
 enforcement, not for omniscience about which rule is right.
+
+## 15. The integrity layer detects and records; it does not stop a privileged process
+
+The write refusal, the guardian and `livium.integrity` sit *inside* the runtime they are
+protecting. An agent that can obtain an operating-system process with the same
+privileges -- which `run_command` with an allowlisted interpreter can, and which is the
+whole point of having a runner -- can modify a protected file, delete the snapshot table,
+or rewrite the record by going around the Python API entirely. What the layer guarantees
+in that case is not prevention. It is that the change is *detected* by digest on the next
+check, recorded in an append-only table, attributed as far as the evidence goes, and made
+visible to a human, and that the run freezes rather than continuing as though nothing
+happened. `docs/LIMITATIONS.md` says "detects" rather than "prevents" deliberately.
+
+Two mechanisms reduce the window rather than closing it: the enforcement probes run in a
+separate interpreter against a copy of the tree, so the code being checked does not get to
+report on itself, and `integrity_event` refuses `UPDATE` and `DELETE` at the SQLite level
+rather than relying on the application not to issue them. Neither survives an attacker
+with write access to the database file. The honest claim is therefore: **a tamper is
+recorded and visible, not impossible.**
+
+## 16. What the enforcement probes cover, and what they do not
+
+`livium integrity verify` runs eleven probes: a protected write is refused, a write
+outside the permitted roots is refused, a shell interpreter is refused, a non-allowlisted
+binary is refused, network access is refused with an empty allowlist, the promotion gate
+blocks after a boundary violation, an anonymous approver is refused, a modification is
+detected, a clean tree is accepted, the record refuses an update and a delete, and a
+baseline can be recorded. Each probe asserts a refusal or a detection; a candidate that
+removes the ability to notice a change fails the detection probe, and a test asserts that
+it does (`tests/test_integrity.py::EnforcementProbeTests`).
+
+They do not prove the absence of every weakening. A candidate that keeps each asserted
+behaviour but narrows what is *checked* -- say, hashes a prefix of each file -- passes
+them. A candidate could also weaken something none of the probes observes. The probes are
+evidence about the behaviours they name; they are not a proof about the system as a
+whole, and the review that accompanies them is a human reading a structural diff.
+
+## 17. The discovery queue's judgement is lexical, and a merge can still be wrong
+
+Two records are treated as the same observation when their normalised text is identical,
+or when the same source is named and at least three significant words are shared and the
+token overlap is at least 0.6. That is a heuristic: a genuinely different observation that
+shares enough wording with an existing one will be *merged*, and its evidence appended to
+the earlier record rather than kept as a separate row. The merge never overwrites the
+original provenance, and it appends history, so nothing is silently lost -- but the second
+observation does not get its own state, its own ranking or its own investigation.
+
+Ranking is lexical too: confidence, evidence, risk and effort, combined by a fixed
+formula, with no learning from outcomes. A queue that has been reviewed by a human is the
+input to the next ranking only to the extent that statuses differ.
+
+## 18. A follow-up conclusion is a claim with verified evidence, and both are labelled
+
+When a follow-up investigation closes an item as `completed`, the record contains the
+harness's verified evidence (which task ran, which tools executed, which criterion
+passed) *and* the conclusion the task reached. The harness verifies that the investigation
+touched real state; it cannot verify that a sentence about the world is true. The two are
+stored in separate fields and the reason text says which is which, precisely so that a
+later reader cannot mistake the conclusion for a verified fact.
+

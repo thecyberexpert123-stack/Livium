@@ -206,6 +206,162 @@ control characters, arguments are passed literally. The surviving tests assert t
 literal-passing behaviour rather than the old blanket refusal. A rule that cannot
 point at the mechanism it protects is a rule that will be worked around.
 
+## 18. A security probe that tampers with the checkout
+
+**What happened.** The enforcement probes asserted "a modification of a protected file is
+detected" by writing to `livium/guardian.py` in the live working tree and restoring it in a
+`finally` block. The check that exists to prevent unauthorised modification was performing
+one, on every run, and a crash between the write and the restore would have left the tree
+tampered. It also depended on the operator having baselined their own home, so on a fresh
+home it reported "tamper not detected" -- a real check reported as broken because the test
+arrangement was wrong.
+
+**What changed.** The probes run in their own home and tamper with a file they own, created
+for the purpose. The one thing a probe may never do is the thing it is checking for.
+
+## 19. A fingerprint over keywords is a fingerprint that loses records
+
+**What happened.** Deferred observations were deduplicated by hashing the sorted set of
+words four characters or longer. "one / observation behind one" and "two / observation
+behind two" therefore had the *same* fingerprint, and the second observation was merged
+into the first -- silently, because a merge is a normal and desirable event for a genuine
+duplicate. The queue looked healthy and had lost a record.
+
+**What changed.** Exact-duplicate detection hashes the whole normalised text; near
+duplicates go through the token-overlap path, which now requires three shared significant
+words before proposing a merge. A test captures two observations that share only their long
+words and asserts they stay apart. The general rule: a hash used for identity must be taken
+over the thing that must be identical, not over a summary that discards the differences.
+
+## 20. The investigation path bypassed the permission engine
+
+**What happened.** The first version of the follow-up runner executed the commands a
+discovery mentioned by calling the subprocess runner directly. Every guard the rest of the
+system depends on -- the allowlist, the approval path, the journal, the post-tool integrity
+check -- lives in the *tool layer*, and the runner is underneath it. A path that reaches
+underneath the guards is not a shortcut; it is a bypass, and it was reachable from a
+command string that came out of an observation.
+
+**What changed.** Follow-up executions go through `ToolRegistry.invoke`, so an executed
+command is checked, journalled and followed by an integrity check exactly like any other.
+The same lesson applies to reading: the runner now resolves paths through the workspace and
+reports absence rather than assuming.
+
+## 21. Verifying only at the end made verification useless for deciding anything
+
+**What happened.** Acceptance criteria were executed after the loop had already decided the
+task was over. The answer could still change the status, but it could not change the
+*next step* -- so a plan to evaluate deferred work "after the task is verified" had no
+moment at which that was true inside the loop.
+
+**What changed.** Verification now runs when the model claims completion, its result is
+cached for the task, and the same real checks still run at the end of every task. The model
+still cannot close a task; the difference is that the harness's verdict is available to the
+router while the run is still in progress.
+
+## 22. A record that can be edited is not a record
+
+**What happened.** The first design wrote integrity findings into the same journal as
+everything else, where any code path could update them. The row a tamper attempt would most
+like to rewrite is the row describing the tamper attempt.
+
+**What changed.** Detections, approvals, refusals, recoveries and verification results go
+into `integrity_event`, which refuses `UPDATE` and `DELETE` at the SQLite level. The
+application does not merely avoid editing it; it is prevented from editing it. A test
+attempts both and asserts they fail.
+
+## 23. A recovery that is not verified is a claim
+
+**What happened.** The tempting implementation of "restore a protected file" is to write
+the baselined bytes and report success. The failure mode is a partial write, a
+simultaneous modification, or an exception between the write and the report -- any of
+which produces a system that says it recovered and did not.
+
+**What changed.** `restore` writes atomically, re-hashes the file on disk, compares the
+hash to the baselined digest, records `recovery_performed` or `recovery_failed`, and raises
+if it did not verify. There is no code path that reports a recovery without checking the
+bytes.
+
+## 24. A fixture that lists tools falls behind the registry
+
+**What happened.** The router's selection tests carried a hand-written list of tool names.
+Two new tools were added and the tests kept passing -- against a tool set that no longer
+existed, which made the meta-tool assertions vacuous.
+
+**What changed.** `tests/test_hygiene.py` parses that fixture and compares it to the
+registry's own declared names, so the list cannot go stale. It found a missing entry the
+first time it ran.
+
+## 25. Test code that is written but never runs
+
+**What happened.** A demonstration and its test called the same capability by different
+paths: the test asserted on a *fresh agent* whose script had not been supplied, so the run
+under test made no tool calls at all and the assertion "the capability ran" failed for a
+reason that had nothing to do with the capability.
+
+**What changed.** The demo builds the script once and passes it to the agent that runs the
+task. The general lesson, and the reason `test_hygiene.py` counts test methods at all: a
+check must be shown to fail for the right reason at least once, or it is decoration.
+
+## 26. A measurement that existed but was never attributed
+
+**What happened.** The journal recorded every model reply with its provider usage, and the
+ledger aggregates usage per task. The `model_reply` events were written without a
+`task_id`, so the ledger's query — "replies belonging to this task" — could never find any.
+The columns existed, the code that fills them existed, and the number was always NULL: a
+measurement that was taken and then thrown away at the join.
+
+**What changed.** `_call_model` now takes the task id and writes it with the event. The
+lesson is about *where* to look for this class of bug: not at the code that computes a
+number, but at the key that links it to the thing it describes.
+
+## 27. `super().__init__()` is not optional in a subclass
+
+**What happened.** A test client subclassed `ModelClient` and did not call
+`super().__init__(config)`. Everything looked right until the first call, which failed on
+a missing attribute that the base class sets. Inheriting the interface is not inheriting
+the setup.
+
+**What changed.** The client calls `super().__init__(config)` and the model-layer tests
+assert behaviour through the parent's contract, including `stop_reason` — which the base
+class requires and the test client had been omitting.
+
+## 28. Two tests agreed with each other about the wrong number
+
+**What happened.** A test asserted the ledger stored an estimate *and* a test asserted no
+estimate was stored; both passed, because the two read different rows — one queried by
+task id and one by insertion order. The disagreement was invisible until a third
+assertion compared them.
+
+**What changed.** The ledger assertions read the ledger row for the task under test, and a
+later test asserts the two columns are *mutually exclusive* per task (actual XOR estimate).
+A pair of tests that cannot disagree is worth more than a pair that happens to agree.
+
+## 29. A result that reported "estimated" for a measurement that did not happen
+
+**What happened.** The ledger has two token columns: measured usage and an estimate. The
+estimate is computed by the context manager, summed over context reports. When a
+provider reported no usage, the estimate column was populated — correct — but the
+`usage_reported_calls` counter was derived from the same loop that skipped the missing
+values, so a home with three tasks could show an estimate and zero reported calls. The
+report's phrasing ("where usage was not reported the column is NULL") then described a
+row that also carried an estimate, which reads as a contradiction unless both statements
+are read carefully.
+
+**What changed.** The report names both columns explicitly and the ledger test asserts the
+XOR: exactly one of the two is present for every task. Precision about which number is
+which is the whole point of keeping two columns.
+
+## 30. Honest failures are cheaper than convenient successes
+
+**What happened.** A demo step failed because the model's script produced a tool call the
+permission engine refused. The tempting fix was to widen the allowlist so the demo would
+pass. The refusal was correct: the demo had asked for the wrong thing.
+
+**What changed.** The demo asks for what is permitted and shows the refusal path as its own
+step. Three separate demos now *expect* a refusal and assert its reason. A demonstration
+that only ever shows the happy path is a brochure.
+
 ---
 
 ## Rules derived from these lessons
@@ -230,3 +386,15 @@ form of the above, and `AGENTS.md` carries them into the workspace:
 9. Prefer the boundary that names its mechanism over the boundary that sounds strict.
 10. Store provenance with the thing it describes; never let a reader default to a
     flattering label.
+11. A check that tampers with the system it is checking is not a check; give it its own
+    copy and its own state.
+12. A hash that decides identity must be taken over the whole thing, not over a summary
+    that discards the differences between two of them.
+13. Verify at the moment the decision is made, not only at the end: a verification that
+    cannot change the next step is a report, not a control.
+14. When a number is wrong, check the join before checking the arithmetic: an
+    unattributed measurement is a measurement that was never taken.
+15. A fixture that lists part of the system is a claim about the system; make a test
+    compare it to the real thing, or it will describe a version that no longer exists.
+16. A tool that can reach underneath the guards is a bypass, however convenient the
+    path: route effects through the layer that checks them.

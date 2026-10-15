@@ -19,9 +19,15 @@ from livium.router import (
     select_tools, signature_of,
 )
 
+#: Stand-in for the registry's tool names. Kept as a literal so this module stays
+#: pure control logic with no configuration or filesystem; `tests/test_hygiene.py`
+#: asserts it lists every tool the registry actually declares, so it cannot silently
+#: fall behind and start testing a tool set that no longer exists.
 AVAILABLE = ("read_file", "list_dir", "write_file", "run_command", "sha256",
-             "memory_search", "memory_write", "memory_recent", "memory_forget",
-             "request_capability", "tool_info", "finish_task")
+             "memory_search", "memory_write", "memory_recent", "memory_update",
+             "memory_forget",
+             "request_capability", "tool_info", "finish_task",
+             "record_discovery", "discovery_update")
 
 
 def context(**overrides) -> StepContext:

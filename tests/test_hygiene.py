@@ -106,6 +106,29 @@ def is_test_case(names: list[str], known: dict[str, list[str]], seen: frozenset[
     return False
 
 
+class FixtureTests(unittest.TestCase):
+    """A fixture that lists tools can fall behind the registry that defines them."""
+
+    def test_the_router_tool_fixture_lists_every_registered_tool(self) -> None:
+        from livium.config import Config
+        from livium.tools import ToolRegistry
+
+        declared = set(ToolRegistry(Config.load(), None, None, None, None).specs_names())
+        source = (TESTS / "test_router.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        literal: set[str] | None = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "AVAILABLE":
+                literal = {elt.value for elt in node.value.elts}
+        self.assertIsNotNone(literal, "test_router.AVAILABLE is no longer a literal to check")
+        missing = sorted(declared - (literal or set()))
+        self.assertEqual(
+            missing, [],
+            f"the router's tool fixture does not list {missing}; the selection tests would "
+            f"then be asserting against a tool set that no longer exists",
+        )
+
+
 def is_fixture_base(node: ast.ClassDef, tree: ast.Module) -> bool:
     """True when another class in the same module inherits from ``node``."""
 

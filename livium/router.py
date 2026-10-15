@@ -18,6 +18,7 @@ The decision set (each one is an observable, journalled fact):
 ``change_approach``      the current approach is provably not working (denied, repeat)
 ``investigate_gap``      run the reuse ladder before anyone proposes new code
 ``request_authorization``a human must approve this operation; the run pauses
+``evaluate_discoveries``the task is verified and deferred observations are waiting
 ``verify``               run the acceptance checks now (harness-owned)
 ``persist``              stop and record the state honestly
 
@@ -45,10 +46,11 @@ INVESTIGATE_GAP = "investigate_gap"
 REQUEST_AUTHORIZATION = "request_authorization"
 VERIFY = "verify"
 PERSIST = "persist"
+EVALUATE_DISCOVERIES = "evaluate_discoveries"
 
 DECISIONS = (RETRIEVE_CONTEXT, SELECT_CAPABILITY, EXECUTE, INSPECT_RESULT,
              INVESTIGATE_FAILURE, RETRY, CHANGE_APPROACH, INVESTIGATE_GAP,
-             REQUEST_AUTHORIZATION, VERIFY, PERSIST)
+             REQUEST_AUTHORIZATION, VERIFY, PERSIST, EVALUATE_DISCOVERIES)
 
 #: Failure classes, from the tool layer's own signals rather than from prose.
 PERMISSION = "permission"
@@ -78,6 +80,9 @@ TOOL_KEYWORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("write", "create", "save", "produce", "draft", "notes", "file"), ("write_file", "read_file")),
     (("run", "execute", "command", "test", "build", "install", "script", "shell"),
      ("run_command",)),
+    (("discovery", "discoveries", "opportunity", "opportunities", "deferred", "backlog",
+      "follow-up", "followup", "queue", "revisit"),
+     ("discovery_update", "record_discovery", "memory_search")),
     (("remember", "recall", "memory", "learn", "lesson", "previously", "before"),
      ("memory_search", "memory_write", "memory_update", "memory_recent")),
     (("forget", "retire", "remove the record"), ("memory_forget", "memory_search")),
@@ -88,9 +93,20 @@ TOOL_KEYWORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 #: Meta tools that are always available to the model. They are cheap, they never
 #: perform a side effect, and without them the model could not ask for anything that
 #: was not predicted here.
-META_TOOLS = ("finish_task", "request_capability", "tool_info")
+#: Offered on every step regardless of keywords: finishing, asking for a capability
+#: that does not exist, looking up an interface, and -- because the moment an
+#: opportunity is noticed is the moment it is worth recording -- noting a discovery.
+#: Recording one is cheap and changes nothing about the current task, which is why it
+#: earns a permanent slot that a rarer tool would not.
+META_TOOLS = ("finish_task", "request_capability", "tool_info", "record_discovery")
 
-MAX_EXPOSED_TOOLS = 7
+#: A bound, not a target: how many tool interfaces one step may carry. It moved from
+#: seven to eight when `record_discovery` earned a permanent slot, because the meta
+#: tools come out of the same budget and the alternative was a step that could carry
+#: the note-taking tool but not the tool the objective actually named. The bound is
+#: what keeps a request from growing with the size of the catalog; the number itself
+#: is an economy decision, and a test pins it.
+MAX_EXPOSED_TOOLS = 8
 
 
 @dataclasses.dataclass
@@ -120,6 +136,14 @@ class StepContext:
     freeze_reason: str | None = None
     max_retries_per_tool: int = 2
     investigated_tools: Sequence[str] = ()
+    #: Deferred work, as the router is allowed to see it: how many ready discoveries
+    #: are waiting, whether follow-up is enabled, and the budget that applies.
+    ready_discoveries: int = 0
+    followup_enabled: bool = True
+    followup_budget: dict[str, Any] = dataclasses.field(default_factory=dict)
+    #: True only when the harness has executed the acceptance criteria and they passed.
+    #: A model's claim is never this.
+    criteria_satisfied: bool = False
 
 
 @dataclasses.dataclass
@@ -249,9 +273,16 @@ class TaskRouter:
         #  The order is the safety property: a frozen guardian stops everything, an
         #  unexplained side effect is established before the task can be closed, and
         #  only then does the harness consider the model's completion claim.
+        # Order is the safety property. `_evaluate_discoveries` sits directly after the
+        # two rules that must always win -- a freeze, and an operation whose real
+        # outcome is still unknown -- because it only fires in one narrow state: the
+        # task's criteria have been verified by the harness and the model has asked to
+        # finish. It is placed before `_finish` because otherwise `_finish` would match
+        # first and the queue would never be looked at.
         decisions = (
-            self._frozen, self._unresolved_intents, self._finish, self._denied,
-            self._failed, self._repeat, self._no_progress, self._gap, self._execute,
+            self._frozen, self._unresolved_intents, self._evaluate_discoveries,
+            self._finish, self._denied, self._failed, self._repeat, self._no_progress,
+            self._gap, self._execute,
         )
         for rule in decisions:
             decision = rule(ctx)
@@ -421,6 +452,29 @@ class TaskRouter:
                 used=tuple(ctx.attempted_tools),
                 forced=("request_capability", "tool_info", "finish_task", "tool_info")),
             requires_model=True,
+        )
+
+    def _evaluate_discoveries(self, ctx: StepContext) -> RouteDecision | None:
+        """Deferred work is waiting and the task is done: name it, do not start it.
+
+        This rule does not investigate anything. It closes the task with the queue
+        named in the record and hands the decision to the follow-up cycle, which has
+        its own budget and its own authorisation path. Starting an investigation from
+        inside a task's loop is exactly the derailment the discovery queue exists to
+        prevent.
+        """
+
+        if not ctx.followup_enabled or not ctx.ready_discoveries:
+            return None
+        if not (ctx.finish_requested and ctx.criteria_satisfied):
+            return None
+        return RouteDecision(
+            EVALUATE_DISCOVERIES,
+            f"the task's acceptance criteria are satisfied and {ctx.ready_discoveries} "
+            f"deferred discovery(ies) are ready; they are evaluated after this task closes",
+            {"ready": ctx.ready_discoveries, "step": ctx.step,
+             "budget": dict(ctx.followup_budget or {})},
+            requires_model=False,
         )
 
     def _execute(self, ctx: StepContext) -> RouteDecision:

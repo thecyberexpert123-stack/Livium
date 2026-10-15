@@ -138,7 +138,7 @@ def evidence_for_experience(
 
 
 @dataclasses.dataclass
-class LedgerRow:
+class LedgerRow:  # noqa: D101 - the fields are the row's columns, named as they are stored
     task_id: str
     category: str
     status: str
@@ -213,6 +213,12 @@ class Ledger:
         verification_state: str | None = None,
         status: str | None = None,
         duration_ms: int | None = None,
+        #: Deferred work, measured rather than described: how many observations this
+        #: task captured for later, and how many follow-up investigations were run for
+        #: it. Both are read back from the discovery table, never from the model's
+        #: account of what it did.
+        discoveries_captured: int = 0,
+        followups_investigated: int = 0,
     ) -> int:
         with self.store.transaction() as conn:
             cur = conn.execute(
@@ -222,8 +228,9 @@ class Ledger:
                 "model_failures, prompt_tokens_actual, completion_tokens_actual, "
                 "usage_reported_calls, tokens_estimated, tools_executed, retries, denials, "
                 "approvals_requested, failures, route_decisions, verification_state, status, "
-                "duration_ms, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "duration_ms, discoveries_captured, followups_investigated, "
+                "created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     task_id, category, len(objective), tools_exposed, tools_available,
                     json.dumps(list(capabilities_selected)), json.dumps(list(memory_ids)),
@@ -234,7 +241,8 @@ class Ledger:
                     completion_tokens_actual, usage_reported_calls, tokens_estimated,
                     tools_executed, retries, denials, approvals_requested, failures,
                     json.dumps(list(route_decisions), default=str),
-                    verification_state, status, duration_ms, now(),
+                    verification_state, status, duration_ms, discoveries_captured,
+                    followups_investigated, now(),
                 ),
             )
             return int(cur.lastrowid or 0)

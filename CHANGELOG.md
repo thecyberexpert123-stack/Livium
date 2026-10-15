@@ -3,6 +3,118 @@
 All notable changes to Agent Livium. Every entry states what was verified and how,
 because a change that was never exercised is not a change that works.
 
+## [0.3.0] — integrity response and deferred discovery
+
+Two failures of 0.2.0 are closed. A detected modification of a protected component was
+a log line and a frozen boolean, and an observation the agent made while working on
+something else was either acted on immediately -- derailing the task that noticed it --
+or lost with the context. Nothing from 0.2.0's behaviour was removed.
+
+### Added
+
+**Integrity policy and an append-only record** (`livium/integrity.py`, new)
+- One written policy for twelve components in four tiers (`governance`, `enforcement`,
+  `instructions`, `operational`), each with *why* it is protected, what a change is
+  *permitted* to do, who may *authorise* it, how the change is *verified*, and what
+  *weakening* it would look like. The policy lives next to the mechanism that enforces it.
+- `integrity_event`: what was detected, the expected state, the policy applied, the
+  decision, the human authorisation, the evidence, the recovery and its outcome, the
+  residual uncertainty, the attribution and the revision. Append-only **by SQLite
+  trigger** -- an `UPDATE` and a `DELETE` are both refused, because the row a tamper
+  attempt would most like to rewrite is the row describing the tamper attempt.
+- `integrity_snapshot`: one blob per baselined digest, kept in the database so the
+  agent's own tools cannot write it.
+- `inspect()` per path: `ok | changed | unbaselined | missing`, recording detections.
+- `review_change` / `review_candidate`: structural comparison against the baselined
+  content (removed definitions, reduced enforcement call-sites), writing nothing.
+- `approve_change`: a named human, every weakening finding acknowledged, the enforcement
+  probes (and optionally the whole test suite) passing, *then* a re-baseline of that one
+  file plus a snapshot. A refusal is recorded with its reason and moves no baseline.
+- `restore`: protected components only, a stored snapshot required, atomic replace, and
+  the result verified by hashing what is now on disk. An unnamed approver is refused.
+- `verify_enforcement`: eleven behavioural probes run in a **separate interpreter, in
+  their own home, against a copy of the tree** with any candidate applied. A
+  deliberately weakened candidate fails them (`tests/test_integrity.py` asserts the
+  failure, so the probes cannot pass by construction).
+
+**Deferred discovery** (`livium/discovery.py`, new)
+- A durable queue: provenance (`agent_observation` vs `observed_content`), confidence,
+  uncertainty, effort, risk, permissions required, protected files touched, related
+  records, spawn lineage, history, outcome and verification evidence.
+- A checked transition table (`pending → ready → investigating → completed` and the
+  alternatives), a fingerprint that only merges *exact* duplicates, and untrusted-content
+  flags for text that reads as an instruction.
+- `record_discovery` and `discovery_update` tools, and a router rule
+  (`evaluate_discoveries`) that fires **only after the harness has verified the task's
+  acceptance criteria** -- the observation is named at the end of the task, never acted
+  on inside it.
+- `FollowUpCycle`: a budgeted, resumable cycle that investigates an item as *its own
+  real task* -- same loop, same tools, same permissions, its own task id and its own
+  verification. A crashed investigation is recorded as postponed, never as an outcome.
+- CLI: `livium discovery list|show|review|update|investigate` and
+  `livium integrity status|events|incidents|review|verify|approve|reject|restore`.
+
+### Changed
+
+- `GrowthGuardian` keeps its public API and delegates policy, snapshots, review and the
+  append-only record to `livium.integrity`, so there is one implementation of each.
+- The write-refused surface widened from six components to twelve (adding `integrity.py`,
+  `approvals.py`, `tools.py`, `verification.py`), and `LIVIUM_EXTRA_PROTECTED_PATHS` lets
+  a deployment protect its own files. A file protected only by configuration is still
+  watched and still refused; what it lacks is a written rationale, and the record says so
+  instead of borrowing one.
+- Acceptance verification now runs at the moment the model claims completion (cached per
+  task) so the result can decide the next step; the same real checks still run at the end
+  of every task, and the model's claim is still never the thing that closes it.
+- The learning ledger records `discoveries_captured` and `followups_investigated`,
+  counted from the queue rather than from the model's account of what it did.
+- `LIVIUM_FOLLOWUP_*` settings bound one follow-up cycle (items, model calls, steps,
+  seconds, tokens, chain depth); stopping leaves the rest of the queue ready and journals
+  why it stopped.
+
+### Fixed — each found by running the system, not by reading it
+
+- **Unrelated observations were merged into one record.** The duplicate fingerprint
+  hashed the *set of long words*, so "one / observation behind one" and "two /
+  observation behind two" had the same fingerprint and the second observation was
+  silently discarded. The fingerprint is now taken over the whole normalised text;
+  similar-but-not-identical text goes through the token-overlap path, which now requires
+  three shared significant words before it proposes a merge.
+- **The enforcement probes tampered with the live checkout** (`livium/guardian.py`) and
+  depended on the operator having baselined their home, so on an unbootstrapped home they
+  reported a broken check. They now run in their own home and tamper with a file they own.
+- **The follow-up investigation ran commands through the raw subprocess runner**, which
+  bypasses the permission engine, the journal and the post-tool integrity check. It now
+  goes through the tool registry, so an executed command is checked like any other.
+- **`Runner.run` accepted a per-call timeout and ignored it** (a 30-second command ran to
+  completion under a 2-second limit). The limit is now applied and clamped to the ceiling.
+- **`run_command` reported ENOENT when the workspace directory did not exist** instead of
+  creating it, which made a missing directory look like a missing program.
+- **The permission policy refused shell metacharacters in arguments** even though no shell
+  is ever spawned, blocking legitimate commands while doing nothing about the real risk.
+  Metacharacters are now literal text and shell interpreters are refused outright.
+- **`record_discovery` passed a `depth` its constructor has no use for**; the depth is
+  derived from the spawning record, which is what makes the chain bounded.
+- **`register_external` never recorded a capability's provenance**, so every promoted
+  capability appeared in the tool catalogue as a builtin.
+
+### Verified
+
+- `python3 -m unittest discover -s tests -t tests` — **339 tests, OK** (24 modules).
+- `livium integrity verify` — 11/11 probes pass in 0.13 s; a candidate that stops the
+  policy module watching its components fails 2 of them and is recorded as
+  `enforcement_verification_failed`.
+- `python3 demos/run_mission_demos.py --approve-as "Demo Reviewer"` — **M1–M9 all
+  verified**, including the two new scenarios (M7 deferred discovery, M8 the queue
+  through the CLI, M9 modification → record → review → refusal → verified recovery).
+
+### Not verified here
+
+- Live inference against a hosted provider: no reachable endpoint in this environment.
+  The clients, wire formats and failure paths are tested; a real completion is not.
+- That the enforcement probes catch *every* weakening. They catch the behaviours they
+  assert, and the ones they assert are the ones the design claims.
+
 ## [0.2.0] — task-directed information flow
 
 An implementation pass over the second specification: store broadly, retrieve

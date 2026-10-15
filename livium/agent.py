@@ -21,7 +21,9 @@ What is real here, and what the loop refuses to do:
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
+import pathlib
 import time
 import uuid
 from typing import Any, Callable, Sequence
@@ -44,13 +46,18 @@ from .models import (
 from .permissions import PermissionEngine
 from .ledger import Ledger, classify as classify_task, evidence_for_experience
 from .recovery import Recovery
+from .discovery import (
+    BLOCKED, COMPLETED, FollowUpBudget, FollowUpCycle, INVESTIGATING, POSTPONED,
+    READY, REJECTED, DiscoveryQueue,
+)
 from .router import (
-    CHANGE_APPROACH, EXECUTE, INSPECT_RESULT, INVESTIGATE_FAILURE, INVESTIGATE_GAP,
-    PERSIST, REQUEST_AUTHORIZATION, RETRIEVE_CONTEXT, RETRY, SELECT_CAPABILITY, VERIFY,
-    StepContext, TaskRouter, classify_failure, mentions_gap, signature_of,
+    CHANGE_APPROACH, EVALUATE_DISCOVERIES, EXECUTE, INSPECT_RESULT, INVESTIGATE_FAILURE,
+    INVESTIGATE_GAP, PERSIST, REQUEST_AUTHORIZATION, RETRIEVE_CONTEXT, RETRY,
+    SELECT_CAPABILITY, VERIFY, StepContext, TaskRouter, classify_failure, mentions_gap,
+    signature_of,
 )
 from .store import Store, now
-from .tools import ToolContext, ToolRegistry, ToolResult
+from .tools import TOOL_META, ToolContext, ToolRegistry, ToolResult
 from .verification import Verifier, normalize_criteria, summarize
 
 
@@ -120,6 +127,10 @@ class LiviumAgent:
             max_seconds=config.limits.max_command_seconds,
             max_output_bytes=config.limits.max_tool_output_bytes,
         )
+        #: Deferred discoveries: the queue is durable state, not a per-run list, so it
+        #: survives the process that captured it (see livium.discovery).
+        self.discoveries = DiscoveryQueue(
+            self.store, max_depth=config.limits.followup_max_depth)
         self.tools = ToolRegistry(config, self.engine, self.store, self.memory, self.runner)
         self.verifier = Verifier(config, self.engine, self.store, self.memory, self.runner)
         self.context = ContextManager(config, self.store, self.memory, self.capabilities, self.guardian)
@@ -129,6 +140,319 @@ class LiviumAgent:
         self.capability_load_failures: list[str] = []
         self._probe: dict[str, Any] | None = None
         self._verify_timeout = verify_timeout
+
+    def _verify_criteria(self, criteria: list[dict[str, Any]], task_id: str):
+        """Run the acceptance criteria for real, once per task, and cache the result.
+
+        Verification is the harness checking the world, not the model reporting on
+        itself, so it is run at the moment the model claims completion and the same
+        result is reused when the loop ends. Re-running the checks would double the
+        cost of a task to reach the same answer.
+        """
+
+        cached = self._criteria_cache.get(task_id)
+        if cached is not None:
+            return cached[0]
+        if self._verify_timeout is not None:
+            self.runner.max_seconds = self._verify_timeout
+        results = self.verifier.verify(criteria, task_id=task_id)
+        summary = summarize(results)
+        self._criteria_cache[task_id] = (results, summary)
+        return results
+
+    def _criteria_summary(self, criteria: list[dict[str, Any]], task_id: str) -> dict[str, Any]:
+        self._verify_criteria(criteria, task_id)
+        return self._criteria_cache[task_id][1]
+
+    # -- deferred work ----------------------------------------------------
+    def _budget(self) -> FollowUpBudget:
+        limits = self.config.limits
+        return FollowUpBudget(
+            max_items=limits.followup_max_items,
+            max_seconds=limits.followup_max_seconds,
+            max_model_calls=limits.followup_max_model_calls,
+            max_steps=limits.followup_max_steps,
+            max_tokens=limits.followup_max_tokens,
+        )
+
+    def _run_followups(self, objective: str, *, task_id: str) -> dict[str, Any]:
+        """Evaluate ready discoveries after the task that produced them is verified.
+
+        The cycle has its own budget and its own record. It is allowed to investigate,
+        to conclude that nothing needs doing, or to establish that the observation was
+        about the primary task after all -- and it is not allowed to become the rest of
+        the run: when the budget is spent, the remaining items stay queued and the stop
+        is journalled with the reason, so a later cycle resumes exactly there.
+        """
+
+        cycle = FollowUpCycle(self.discoveries, budget=self._budget())
+        try:
+            results = cycle.run(
+                functools.partial(self._followup_runner, task_id=task_id),
+                clock=time.monotonic, task_id=task_id)
+        except Exception as exc:  # a cycle must never fail the task it follows
+            self.store.append_event(
+                "discovery_cycle_failed",
+                {"task_id": task_id, "error": f"{type(exc).__name__}: {exc}"},
+                task_id=task_id,
+            )
+            return {"evaluated": 0, "completed": 0, "rejected": 0, "postponed": 0,
+                    "blocked": 0, "carried": 0, "resolved": [], "evidence": [],
+                    "objective": objective,
+                    "summary": f"the follow-up cycle failed ({type(exc).__name__}); the "
+                               f"queue is unchanged",
+                    "stopped_because": "the cycle raised, so no deferred work was evaluated"}
+
+        resolved = [r.discovery_id for r in results if r.status in (COMPLETED, REJECTED)]
+        evidence = [{"id": r.discovery_id, "status": r.status, "evidence": r.evidence,
+                     "reason": r.reason} for r in results]
+        counts: dict[str, int] = {}
+        for result in results:
+            counts[result.status] = counts.get(result.status, 0) + 1
+        if results:
+            summary = (
+                f"{len(results)} evaluated: "
+                + ", ".join(f"{count} {state}" for state, count in sorted(counts.items()))
+                + f"; {len(self.discoveries.eligible())} still ready"
+            )
+        else:
+            summary = "nothing was ready to evaluate"
+        return {
+            "evaluated": len(results), "completed": counts.get(COMPLETED, 0),
+            "rejected": counts.get(REJECTED, 0), "postponed": counts.get(POSTPONED, 0),
+            "blocked": counts.get(BLOCKED, 0), "carried": len(self.discoveries.eligible()),
+            "resolved": resolved, "evidence": evidence, "objective": objective,
+            "summary": summary, "stopped_because": cycle.last_stop_reason,
+        }
+
+    def _followup_runner(self, discovery, budget: FollowUpBudget, *,
+                         task_id: str | None = None) -> dict[str, Any]:
+        """Evaluate one deferred discovery against real state.
+
+        This is deliberately conservative. The runner does not invent work to justify the
+        item: it re-reads the evidence, asks whether the observation still holds, and
+        either closes it with a concrete finding or says what is still unknown. Anything
+        that needs a change to a protected component is recorded as needing a human, not
+        attempted.
+        """
+
+        notes: list[str] = []
+        evidence: list[str] = []
+        status = READY
+        disposition = "unchanged"
+
+        # 1. Does the thing the observation refers to still exist as described?
+        listed = dict(discovery.source_evidence or {})
+        named = [str(item) for item in (listed.get("paths") or [])][:4]
+        present = 0
+        for raw in named:
+            path = self._resolve_evidence_path(raw)
+            if not path.exists():
+                # Absent is reported as absent. Paths can have been extracted from prose,
+                # so a miss is not evidence that the observation was wrong.
+                evidence.append(f"absent: {path}")
+                continue
+            present += 1
+            evidence.append(f"present: {path} ({self.guardian.digest(path)[:12]})")
+        if named and not present:
+            disposition = "stale"
+            notes.append("none of the named files exist any more")
+        for command in list(listed.get("commands") or [])[:2]:
+            # Through the tool registry, never through the runner directly: a command
+            # that came from an observation is checked by the same permission engine,
+            # journalled in the same place and followed by the same integrity check as
+            # any other execution. A follow-up path that could run an unchecked command
+            # would be a way around the boundary the rest of the system enforces.
+            outcome = self.tools.invoke(
+                "run_command", {"command": str(command)},
+                ToolContext(task_id=task_id, step=0, purpose=f"follow-up disc:{discovery.id}",
+                            services=self.services()),
+            )
+            if not outcome.ok:
+                evidence.append(f"`{command}` -> refused ({outcome.error})")
+                notes.append(f"`{command}` could not be run: {outcome.error}")
+                continue
+            exit_code = (outcome.data or {}).get("exit_code")
+            evidence.append(f"`{command}` -> exit {exit_code}")
+            if exit_code not in (0, None):
+                disposition = "confirmed"
+                notes.append(f"the reported symptom reproduces: `{command}` exits "
+                             f"{exit_code}")
+
+        # 2. What is already known about it? A discovery that memory or a validated
+        #    capability already answers is closed as answered, not re-investigated.
+        for record in self.memory.search(discovery.title, limit=3):
+            label = record.key or record.content[:60]
+            notes.append(f"memory:{record.id} {label}")
+        for hit in self.capabilities.search(discovery.title, limit=2):
+            notes.append(f"capability {hit['name']} ({hit['status']}) may cover this")
+            if hit["validated"]:
+                disposition = "answered"
+                evidence.append(f"capability {hit['name']} is validated ({hit['status']})")
+
+        # 3. Say honestly what this evaluation could not settle.
+        uncertainty = (discovery.uncertainty or "the observation is not yet reproduced").strip()
+        uncertainty = uncertainty.rstrip(".") or "the observation is not yet reproduced"
+        if disposition in ("stale", "answered"):
+            status = REJECTED
+            reason = (f"not followed up: {disposition}"
+                      + (f" ({'; '.join(notes)})" if notes else ""))
+        elif disposition == "confirmed":
+            status = COMPLETED
+            reason = (f"the observation was re-checked and holds: "
+                      f"{'; '.join(notes) or 'the evidence still applies'}")
+        else:
+            status = POSTPONED
+            reason = (
+                f"not confirmed by this evaluation: {uncertainty}. Checked "
+                f"{len(evidence)} piece(s) of evidence without confirming or refuting it. "
+                f"The record is kept as postponed with what is now known attached; it is "
+                f"not retried automatically, because a queue that reopens its own items "
+                f"is a queue that never drains."
+            )
+
+        if discovery.touches_protected:
+            status = POSTPONED
+            reason = ("needs a human: the observation concerns a protected component "
+                      "(governance or enforcement), which this cycle may not change")
+            notes.append("protected component in scope")
+
+        # 4. The cheap re-check could not settle it. Investigating properly is a task --
+        #    same loop, same tools, same permissions, its own acceptance criterion -- so
+        #    run one, inside this cycle's budget, and let its verified outcome decide.
+        if disposition == "unchanged":
+            return self._investigate(discovery, budget, evidence=evidence, notes=notes,
+                                     task_id=task_id)
+
+        # 5. Anything noticed *while evaluating this* is queued, not chased.
+        self.store.append_event(
+            "discovery_evaluated",
+            {"id": discovery.id, "status": status, "disposition": disposition,
+             "notes": notes, "budget": budget.as_dict()},
+            task_id=task_id,
+        )
+        return {
+            "status": status,
+            "reason": reason[:1500],
+            "evidence": "; ".join(evidence)[:1500],
+            "spent": budget.as_dict(),
+        }
+
+    def _investigate(self, discovery, budget: FollowUpBudget, *, evidence: list[str],
+                     notes: list[str], task_id: str | None) -> dict[str, Any]:
+        """Run the follow-up as a real task and report what it actually established.
+
+        The criterion is deliberately modest: the investigation must have *touched real
+        state* (at least one tool call) for its conclusion to be recorded as a completed
+        follow-up. The harness can verify that. It cannot verify that a sentence about
+        the world is true, so the conclusion is stored as the task's own claim,
+        labelled as such, next to the evidence the harness did verify.
+        """
+
+        objective = (
+            f"Evaluate a deferred observation and settle it from real state.\n"
+            f"Observation: {discovery.title}\n"
+            f"What was seen: {discovery.observation}\n"
+            f"Why it was deferred: {discovery.why_it_matters or 'not recorded'}\n"
+            f"Unknown at the time: {discovery.uncertainty or 'not recorded'}\n"
+            f"Do this by inspecting the real files and outputs involved. Then finish, "
+            f"stating what you established and what remains unconfirmed. Do not change "
+            f"anything: an observation that turns out to need a change is reported, not "
+            f"implemented, because the task that noticed it has already closed."
+        )
+        outcome = self.run_task(
+            objective,
+            [{"kind": "event", "event_type": "tool_call"}],
+            evaluate_discoveries=False,
+            followup_depth=discovery.depth + 1,
+            followup_parent=discovery.id,
+        )
+        used = self._tools_used(outcome.task_id)
+        prompt_tokens, completion_tokens, reported = self._tokens_for(outcome.task_id)
+        spent = {
+            "model_calls": outcome.model_calls, "steps": outcome.steps,
+            "tokens": (prompt_tokens or 0) + (completion_tokens or 0),
+            "tokens_measured": bool(reported),
+        }
+        detail = "; ".join(outcome.criteria_results[i]["detail"]
+                           for i in range(len(outcome.criteria_results)))[:400]
+        evidence_text = (f"task {outcome.task_id}: tools executed {', '.join(used) or 'none'}; "
+                         f"verification {outcome.verification.get('state')}; checks: {detail}"
+                         )[:1500]
+        if outcome.status == "complete" and outcome.verification.get("state") == "verified":
+            return {
+                "status": COMPLETED,
+                "reason": (
+                    f"investigated as task {outcome.task_id} and the harness verified the "
+                    f"investigation touched real state. The conclusion below is the task's "
+                    f"own claim, not a harness finding: "
+                    f"{(outcome.final_summary or '').strip()[:700]}"
+                ),
+                "evidence": evidence_text,
+                "spent": spent,
+            }
+        return {
+            "status": POSTPONED,
+            "reason": (
+                f"the investigation ({outcome.task_id}) ended {outcome.status} with "
+                f"verification '{outcome.verification.get('state')}'"
+                + (f": {outcome.error}" if outcome.error else "")
+                + (f"; not confirmed: {outcome.unverified}" if outcome.unverified else "")
+            )[:1200],
+            "evidence": evidence_text,
+            "spent": spent,
+        }
+
+    def _tokens_for(self, task_id: str) -> tuple[int | None, int | None, int]:
+        """Measured token usage for a task, or None when the provider reported none."""
+
+        prompt: int | None = None
+        completion: int | None = None
+        reported = 0
+        for row in self.store.events(task_id=task_id, event_type="model_reply", limit=500):
+            try:
+                usage = (json.loads(row["payload"]) or {}).get("usage") or {}
+            except (TypeError, ValueError):
+                continue
+            in_tokens = usage.get("prompt_tokens")
+            if in_tokens is None:
+                in_tokens = usage.get("input_tokens")
+            out_tokens = usage.get("completion_tokens")
+            if out_tokens is None:
+                out_tokens = usage.get("output_tokens")
+            if in_tokens is None and out_tokens is None:
+                continue
+            reported += 1
+            prompt = (prompt or 0) + int(in_tokens or 0)
+            completion = (completion or 0) + int(out_tokens or 0)
+        return prompt, completion, reported
+
+    def _resolve_evidence_path(self, raw: str) -> pathlib.Path:
+        """A path as an observation meant it, not as a string.
+
+        A relative path written down by the model is relative to something the model
+        cannot see: usually the run's workspace, occasionally the checkout. Both are
+        tried, existing first, and when neither exists the workspace-relative reading is
+        returned so the absence is reported for the place it most likely meant.
+        """
+
+        candidate = pathlib.Path(raw)
+        if candidate.is_absolute():
+            return candidate
+        workspace = self.config.paths.workspace
+        options = [(workspace / candidate).resolve(),
+                   (_repo_root() / candidate).resolve()]
+        # "workspace/inventory.txt" means the workspace's own inventory.txt, not a
+        # directory called workspace inside it.
+        first = candidate.parts[0] if candidate.parts else ""
+        if first == workspace.name and len(candidate.parts) > 1:
+            options.insert(0, (workspace / pathlib.Path(*candidate.parts[1:])).resolve())
+        if first == _repo_root().name and len(candidate.parts) > 1:
+            options.append((_repo_root() / pathlib.Path(*candidate.parts[1:])).resolve())
+        for option in options:
+            if option.exists():
+                return option
+        return (workspace / candidate).resolve()
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> dict[str, Any]:
@@ -244,6 +568,12 @@ class LiviumAgent:
             "guardian": self.guardian,
             "capabilities": self.capabilities,
             "tools": self.tools,
+            "discoveries": self.discoveries,
+            "followup_depth": getattr(self, "_followup_depth", 0),
+            "followup_parent": getattr(self, "_followup_parent", None),
+            "integrity": self.guardian.integrity_policy,
+            "runner": self.runner,
+            "verifier": self.verifier,
         }
 
     def close(self) -> None:
@@ -264,6 +594,9 @@ class LiviumAgent:
         task_id: str | None = None,
         resume: bool = False,
         on_step: Callable[[dict[str, Any]], None] | None = None,
+        evaluate_discoveries: bool = True,
+        followup_depth: int = 0,
+        followup_parent: int | None = None,
     ) -> TaskRun:
         started = time.monotonic()
         criteria = normalize_criteria(acceptance)
@@ -299,6 +632,16 @@ class LiviumAgent:
         gap_investigation: dict[str, Any] | None = None
         approvals_requested = 0
         text_only_streak = 0
+        deferred_evaluated = not evaluate_discoveries
+        deferred_note: dict[str, Any] | None = None
+        #: Depth of the deferred-work chain this task belongs to. A task that is itself
+        #: a follow-up records what it notices one level deeper, and the queue refuses
+        #: to investigate past the configured depth -- which is what stops a chain of
+        #: observations from becoming an unbounded recursion.
+        self._followup_depth = followup_depth
+        self._followup_parent = followup_parent
+        criteria_satisfied = False
+        self._criteria_cache: dict[str, tuple[list[Any], dict[str, Any]]] = {}
         # Steps that actually ran to a model call, which is what the task rows, the
         # context reports and TaskRun.steps all count. A terminal decision taken at the
         # top of a step ends the run without executing that step.
@@ -358,6 +701,11 @@ class LiviumAgent:
                     frozen=self.guardian.frozen, freeze_reason=self.guardian.frozen_reason,
                     max_retries_per_tool=self.config.limits.max_retries_per_tool,
                     investigated_tools=tuple(investigated),
+                    ready_discoveries=(0 if deferred_evaluated
+                                       else len(self.discoveries.eligible())),
+                    followup_enabled=self.config.limits.followup_enabled,
+                    followup_budget=self._budget().as_dict(),
+                    criteria_satisfied=finished and criteria_satisfied,
                 ))
                 route_decisions.append({"step": step, **decision.as_dict()})
                 self.store.append_event(
@@ -392,6 +740,41 @@ class LiviumAgent:
                             f"their real outcome is established"
                         )
                         observations.append(unverified_note)
+                    if status == "complete" and not criteria_satisfied:
+                        # The claim is checked now, against the real world, rather than
+                        # only after the loop: the answer decides both whether the task
+                        # closes and whether deferred work may be evaluated, and neither
+                        # decision can be made from a claim.
+                        check = self._criteria_summary(criteria, task_id)
+                        criteria_satisfied = check["state"] == "verified"
+                        observations.append(
+                            f"acceptance checks: {check['state']} "
+                            f"({check.get('passed', 0)}/{check.get('total', 0)} criteria "
+                            f"passed)"
+                        )
+                        if criteria_satisfied and self.discoveries.eligible():
+                            # One more turn, for the router to say what happens to the
+                            # queue. It is not model work: the router answers from state.
+                            continue
+                        if not criteria_satisfied:
+                            status = "partial"
+                            unverified_note = (
+                                f"acceptance checks report '{check['state']}'; the model's "
+                                f"completion claim alone does not close the task"
+                            )
+                    break
+
+                if decision.decision == EVALUATE_DISCOVERIES:
+                    # The task is verified and closed first; only then does the deferred
+                    # work get evaluated, and only from here -- never from inside the loop
+                    # that is trying to finish the task.
+                    observations.append(f"router: {decision.reason}")
+                    deferred_evaluated = True
+                    deferred_note = self._run_followups(objective, task_id=task_id)
+                    observations.append(
+                        f"deferred work: {deferred_note['summary']} "
+                        f"({deferred_note['stopped_because']})")
+                    status = self._status_from_finish(status, final_summary)
                     break
 
                 if decision.decision == REQUEST_AUTHORIZATION:
@@ -539,7 +922,8 @@ class LiviumAgent:
                         call.name, call.arguments,
                         ToolContext(task_id=task_id, step=step,
                                     purpose=str(call.arguments.get("purpose", "")),
-                                    services=self.services()),
+                                    services={**self.services(),
+                                              "current_tool": call.name}),
                     )
                     tool_call_count += 1
                     attempted.append(call.name)
@@ -632,11 +1016,10 @@ class LiviumAgent:
             )
 
         # -- verification, always, from the real world --------------------
-        if self._verify_timeout is not None:
-            self.runner.max_seconds = self._verify_timeout
-        results = self.verifier.verify(criteria, task_id=task_id)
+        results = self._verify_criteria(criteria, task_id)
         criteria_results = [r.as_dict() for r in results]
         summary = summarize(results)
+        criteria_satisfied = summary["state"] == "verified"
 
         if status == "complete" and summary["state"] != "verified":
             status = "partial"
@@ -905,6 +1288,7 @@ class LiviumAgent:
             str(name) for decision in route_decisions
             for name in (decision.get("evidence", {}).get("capability_candidates") or [])
         })
+        captured, investigated = self._discovery_counts(run.task_id)
         reused = bool(executed_capability_tools)
         return Ledger(self.store).record(
             task_id=run.task_id,
@@ -929,7 +1313,28 @@ class LiviumAgent:
             route_decisions=[{"step": d["step"], "decision": d["decision"]} for d in route_decisions],
             verification_state=run.verification.get("state"), status=run.status,
             duration_ms=int((time.monotonic() - started) * 1000),
+            discoveries_captured=captured, followups_investigated=investigated,
         )
+
+    def _discovery_counts(self, task_id: str) -> tuple[int, int]:
+        """How many observations this task captured, and how many were investigated.
+
+        Read from the discovery records themselves. The model's own account of what it
+        noticed is not a measurement, and the ledger exists to be measured.
+        """
+
+        rows = self.store.query("SELECT history FROM discovery WHERE source_task=?",
+                                (task_id,))
+        investigated = 0
+        for row in rows:
+            try:
+                history = json.loads(row["history"] or "[]")
+            except (TypeError, ValueError):
+                continue
+            if any(str(entry.get("event", "")).endswith("-> investigating")
+                   for entry in history if isinstance(entry, dict)):
+                investigated += 1
+        return len(rows), investigated
 
     def _tools_used(self, task_id: str) -> list[str]:
         """Tool names this task actually invoked, from the journal (not from memory)."""
@@ -1137,7 +1542,12 @@ class LiviumAgent:
         caught in the step that performed it rather than at the end of the run.
         """
 
-        if tool in ("run_command", "write_file"):
+        # Which tools need this is read from the registry's own declared side effects
+        # rather than a list kept here, so a tool that starts writing to disk is
+        # covered the moment it says so. `run_command` counts regardless: it can run an
+        # interpreter, which can write anything.
+        meta = TOOL_META.get(tool) or {}
+        if tool == "run_command" or meta.get("side_effects"):
             self.guardian.watch(task_id=task_id, trigger=tool)
 
     def _capabilities_touched(self, task_id: str) -> list[str]:

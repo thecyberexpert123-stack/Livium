@@ -27,7 +27,7 @@ import threading
 from typing import Any, Iterator, Sequence
 
 #: Bumped when the schema gains something an older database must be told about.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -211,6 +211,93 @@ CREATE TABLE IF NOT EXISTS guardian_baseline (
     recorded_at TEXT NOT NULL
 );
 
+-- Deferred discoveries: observations captured during a task that are not that
+-- task, kept so they can be evaluated after it, instead of derailing it now.
+-- `status` is constrained by the transition table in livium.discovery, and the
+-- provenance columns exist so that content read from an inspected file can never be
+-- mistaken for an instruction the agent gave itself.
+CREATE TABLE IF NOT EXISTS discovery (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL,
+    title TEXT NOT NULL,
+    observation TEXT NOT NULL,
+    why_it_matters TEXT NOT NULL DEFAULT '',
+    potential_benefit TEXT NOT NULL DEFAULT '',
+    source_task TEXT,
+    source_step INTEGER,
+    source_tool TEXT,
+    source_evidence TEXT NOT NULL DEFAULT '{}',
+    provenance TEXT NOT NULL DEFAULT 'agent_observation',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    uncertainty TEXT NOT NULL DEFAULT '',
+    effort_estimate TEXT,
+    dependencies TEXT NOT NULL DEFAULT '[]',
+    risk TEXT NOT NULL DEFAULT 'unknown',
+    permissions_required TEXT NOT NULL DEFAULT '[]',
+    touches_protected TEXT NOT NULL DEFAULT '[]',
+    related TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    spawned_by INTEGER,
+    depth INTEGER NOT NULL DEFAULT 0,
+    history TEXT NOT NULL DEFAULT '[]',
+    outcome TEXT,
+    verification_evidence TEXT,
+    flagged TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS discovery_status ON discovery(status, updated_at);
+CREATE INDEX IF NOT EXISTS discovery_task ON discovery(source_task);
+CREATE INDEX IF NOT EXISTS discovery_fingerprint ON discovery(fingerprint);
+
+-- Integrity events: the authoritative record of what was detected, decided and
+-- done about protected components. Append-only, enforced by triggers rather than
+-- by convention, because the row a tamper attempt would most like to rewrite is
+-- the row describing the tamper attempt.
+CREATE TABLE IF NOT EXISTS integrity_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    event TEXT NOT NULL,
+    tier TEXT,
+    paths TEXT NOT NULL DEFAULT '[]',
+    observed TEXT NOT NULL DEFAULT '{}',
+    expected TEXT NOT NULL DEFAULT '{}',
+    detection TEXT NOT NULL DEFAULT 'unknown',
+    policy TEXT NOT NULL DEFAULT '{}',
+    decision TEXT,
+    authorization TEXT,
+    evidence TEXT NOT NULL DEFAULT '{}',
+    recovery TEXT,
+    outcome TEXT NOT NULL DEFAULT 'recorded',
+    uncertainty TEXT NOT NULL DEFAULT '',
+    task_id TEXT,
+    attributable_to TEXT,
+    tool TEXT,
+    revision TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS integrity_event_kind ON integrity_event(event, ts);
+CREATE TRIGGER IF NOT EXISTS integrity_event_no_update
+BEFORE UPDATE ON integrity_event
+BEGIN
+    SELECT RAISE(ABORT, 'integrity_event is append-only: a security record cannot be edited');
+END;
+CREATE TRIGGER IF NOT EXISTS integrity_event_no_delete
+BEFORE DELETE ON integrity_event
+BEGIN
+    SELECT RAISE(ABORT, 'integrity_event is append-only: a security record cannot be deleted');
+END;
+
+-- One snapshot per baselined digest of a protected file: the known-good content
+-- that a change is compared against and that recovery can restore. Kept in the
+-- database rather than beside the file, so it is not writable by the agent's tools.
+CREATE TABLE IF NOT EXISTS integrity_snapshot (
+    path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    content BLOB NOT NULL,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (path, sha256)
+);
+
 CREATE TABLE IF NOT EXISTS verification (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL,
@@ -287,6 +374,11 @@ class Store:
         ("ledger", "usage_reported_calls", "INTEGER NOT NULL DEFAULT 0"),
         ("ledger", "approvals_requested", "INTEGER NOT NULL DEFAULT 0"),
         ("ledger", "experience_evidence", "TEXT NOT NULL DEFAULT '{}'"),
+        # Discovery and ledger columns added when deferred work was introduced.
+        ("discovery", "flagged", "TEXT NOT NULL DEFAULT '[]'"),
+        ("discovery", "touches_protected", "TEXT NOT NULL DEFAULT '[]'"),
+        ("ledger", "discoveries_captured", "INTEGER NOT NULL DEFAULT 0"),
+        ("ledger", "followups_investigated", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     def _add_missing_columns(self) -> None:
