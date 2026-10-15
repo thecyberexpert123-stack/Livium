@@ -442,6 +442,20 @@ differs, it is carried in the message's metadata instead of being resolved away.
 real records disagree, that disagreement is information — silently picking a winner
 destroys it.
 
+## 36. A contract test that names routes nobody reads stops describing anything
+
+**What happened.** The console's contract test listed twelve runtime routes as "what the
+panels read". When the front end was rebuilt, the panels read different routes — and the
+test kept passing, because the old ones still answered. A test that checks the wrong
+surface is worse than no test: it reports a contract that has already moved.
+
+**What changed.** The list was trimmed to the routes the page actually calls, and it now
+covers the console's own routes as well (`/studio/api/state`, the task list, the
+workspace), plus a test that runs a real task through the console's API and asserts the
+transcript it renders — messages, artifact digest, criteria outcomes, run status — came
+back from the runtime that ran it. The list has to be edited whenever the page changes,
+which is the point: the edit is the reminder.
+
 ---
 
 ## Rules derived from these lessons
@@ -490,3 +504,5 @@ form of the above, and `AGENTS.md` carries them into the workspace:
     must carry its age.
 22. "Unknown" and "zero" are different values; a UI that cannot display the first will
     eventually display the second.
+23. A contract test has to name the surface the product actually uses, and the surface
+    changes: if the test never needs editing, it is not watching anything.

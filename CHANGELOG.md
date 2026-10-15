@@ -61,6 +61,20 @@ console exposed.
   double. `.env.example` documents both.
 - The Studio binds `127.0.0.1` by default and warns when told to bind wider; it has no
   authentication and can write into the workspace.
+- The console's layout is a chat shell: tasks on the left with the runtime's verdict on
+  each, the conversation in the middle, and the workspace on the right with a preview
+  pane that a file card in the transcript opens. The run's process, steps, output and
+  artifacts fold into a details block above the messages, and the journal and settings
+  moved into sheets over the conversation. Light and dark themes, both from one
+  stylesheet.
+- `ui/test/ui.test.mjs` (5 tests) checks the page against its script: every id `app.js`
+  reaches for exists in `index.html`, no inline handlers, and the stylesheet covers the
+  shell it lays out. That is the class of defect that shipped a console which loaded as
+  HTML with no behaviour.
+- `ui/test/server.test.mjs`: the contract list now names the routes the page *actually*
+  calls, and a new test runs a task through the console's own API and asserts the
+  transcript it renders — messages, the artifact with its digest, the criteria outcomes
+  and the run status — comes back from the runtime that ran it.
 
 ## [0.3.0] — integrity response and deferred discovery
 

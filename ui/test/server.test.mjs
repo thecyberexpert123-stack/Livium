@@ -218,10 +218,20 @@ test("the page and its assets are served from the Studio itself", { skip: missin
 });
 
 /** The same, but with the real runtime behind it: needed whenever the payload matters. */
-async function withRuntime(t, run) {
+async function withRuntime(t, run, { script = null, files = {} } = {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "livium-studio-live-"));
-  await fs.mkdir(path.join(home, "workspace"), { recursive: true });
-  await writeSettings(home, { provider: "scripted", extra: { LIVIUM_ALLOW_TEST_DOUBLE: "1" } });
+  const workspace = path.join(home, "workspace");
+  await fs.mkdir(workspace, { recursive: true });
+  for (const [name, body] of Object.entries(files)) {
+    await fs.writeFile(path.join(workspace, name), body);
+  }
+  const extra = { LIVIUM_ALLOW_TEST_DOUBLE: "1" };
+  if (script) {
+    const file = path.join(home, "script.json");
+    await fs.writeFile(file, JSON.stringify(script));
+    extra.LIVIUM_SCRIPT_FILE = file;
+  }
+  await writeSettings(home, { provider: "scripted", extra });
   delete process.env.LIVIUM_STUDIO_NO_BACKEND;
   const studio = await createStudio({ home, port: 0, host: "127.0.0.1", python });
   const address = await studio.listen();
@@ -230,30 +240,30 @@ async function withRuntime(t, run) {
   return await run({ base, home });
 }
 
-//: (route, key) pairs the Studio's own page reads out of the proxied runtime API. This is
-//: the same contract the Python viewer keeps for itself, kept here because the Studio is
-//: a second consumer of the same payloads: a renamed field would otherwise show up as a
-//: blank panel rather than as an error.
+//: (route, key) pairs this page reads. The Studio is a second consumer of the runtime's
+//: payloads, so a renamed field would show up as a blank panel rather than as an error.
+//: The list is deliberately the routes the page *actually* calls: a contract test that
+//: checks routes nobody reads stops describing the thing it is supposed to protect.
 const RUNTIME_FIELDS = [
+  ["/studio/api/state", ["settings", "backend", "provider", "runtime", "studio"]],
+  ["/studio/api/chat?limit=60", ["tasks", "runs"]],
+  ["/studio/api/workspace?root=workspace", ["root", "roots", "entries", "path"]],
+  ["/studio/api/workspace/recent?root=workspace&minutes=180", ["files"]],
   ["/api/events?limit=120", ["events"]],
-  ["/api/tasks?limit=60", ["tasks"]],
   ["/api/capabilities", ["capabilities", "loaded_capability_tools", "load_failures"]],
   ["/api/discovery?limit=6", ["counts", "records", "cycles", "stopped_cycles", "note"]],
   ["/api/integrity", ["components", "inspection", "enforcement", "frozen", "note"]],
   ["/api/ledger?limit=8", ["rows", "note"]],
-  ["/api/memory?query=x", ["records", "stats"]],
-  ["/api/recovery", ["findings", "next_action", "safe_to_resume"]],
-  ["/api/context?limit=3", ["reports"]],
-  ["/api/tools", ["tools"]],
-  ["/api/permissions", ["read_roots", "write_roots", "network_allowlist", "denied_binaries",
-                        "allowed_binaries", "git_refused"]],
-  ["/api/guardian", ["integrity", "frozen", "protected_files", "consequences"]],
 ];
 
 test("every field the Studio's panels read is in the runtime's answer", { skip: missing, timeout: 120000 },
      async (t) => {
   await withRuntime(t, async ({ base }) => {
     const problems = [];
+    const state = await (await fetch(`${base}/studio/api/state`)).json();
+    for (const key of ["home", "python", "node", "roots"]) {
+      if (!(key in (state.studio ?? {}))) problems.push(`studio state has no studio.${key}`);
+    }
     for (const [route, keys] of RUNTIME_FIELDS) {
       const response = await fetch(base + route);
       if (!response.ok) {
@@ -286,6 +296,62 @@ test("the Studio reuses the runtime's probe and can ask for a fresh one", { skip
     assert.equal(cached.provider.age_seconds >= 0, true);
     assert.equal(cached.provider.ok, true);
   });
+});
+
+const SCRIPT = [
+  { tool_calls: [{ name: "list_dir", arguments: { path: "." } }] },
+  { tool_calls: [{ name: "read_file", arguments: { path: "notes.txt",
+                                                   purpose: "read the source material" } }] },
+  { tool_calls: [{ name: "write_file", arguments: {
+      path: "report.md", purpose: "the deliverable",
+      content: "# Report\n\nnotes.txt says: bolts 12, nuts 30.\n" } }] },
+  { tool_calls: [{ name: "finish_task", arguments: { summary: "wrote report.md from notes.txt",
+                                                      status: "complete" } }] },
+];
+
+test("the transcript the page renders is read back from a real run", { skip: missing, timeout: 120000 },
+     async (t) => {
+  await withRuntime(t, async ({ base }) => {
+    const objective = "Write report.md in the workspace summarising notes.txt";
+    const started = await (await fetch(`${base}/studio/api/chat`, {
+      method: "POST", headers: WRITE,
+      body: JSON.stringify({ objective, criteria: [{ kind: "file_exists", path: "report.md" }] }),
+    })).json();
+    assert.equal(started.run.status, "running");
+
+    const deadline = Date.now() + 90000;
+    let run = started.run;
+    while (run.status === "running") {
+      if (Date.now() > deadline) throw new Error(`the run did not finish:\n${run.log_tail}`);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      run = (await (await fetch(`${base}/studio/api/runs/${started.run.id}`)).json()).run;
+    }
+    assert.equal(run.exit_code, 0, run.log_tail);
+
+    const payload = await (await fetch(`${base}/studio/api/chat/${started.run.task_id}`)).json();
+    assert.equal(payload.task.objective, objective);
+    assert.equal(payload.verification_label, "verified 1/1");
+    assert.equal(payload.criteria[0].outcome, "passed");
+    assert.equal(payload.messages[0].role, "user");
+    assert.equal(payload.messages[0].body, objective);
+    assert.equal(payload.messages[1].role, "assistant");
+    assert.equal(payload.counts.artifacts, 1);
+
+    const [artifact] = payload.artifacts;
+    assert.equal(artifact.path, "report.md");
+    assert.equal(artifact.in_workspace, true);
+    assert.match(artifact.sha256, /^[0-9a-f]{64}$/);
+    assert.equal(artifact.bytes, 45);
+    assert.equal(payload.steps.length > 0, true, "a real run records steps");
+    assert.equal(payload.run.status, "exited");
+
+    // ...and the sidebar's own list carries the same verdict, read from the task row.
+    const list = await (await fetch(`${base}/studio/api/chat?limit=60`)).json();
+    const row = list.tasks.find((task) => task.task_id === started.run.task_id);
+    assert.ok(row, "the task is missing from the sidebar list");
+    assert.equal(row.verification, "verified 1/1");
+    assert.equal(row.status, "complete");
+  }, { script: SCRIPT, files: { "notes.txt": "bolts: 12\nnuts: 30\n" } });
 });
 
 test("an empty objective is refused before anything is spawned", { skip: missing }, async (t) => {

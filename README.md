@@ -52,7 +52,7 @@ independently runnable and testable:
 python3 -m unittest discover -s tests -t tests      # 359 tests, ~30s, no network
 python3 demos/run_demonstrations.py                 # the six mandatory demonstrations
 python3 demos/run_mission_demos.py --approve-as "Your Name"   # the mission demonstrations
-cd ui && node --test                                # 40 tests for the operator console
+cd ui && node --test                                # 46 tests for the operator console
 ```
 
 ---
@@ -141,13 +141,19 @@ cd ui && node --test                    # the console's own tests
 It starts `livium serve` for you on a free port and proxies to it, so the buttons and
 the viewer act on the same runtime, the same database and the same permission engine.
 
-| Tab | What it is for |
+It is laid out the way a chat window is: tasks on the left, the conversation in the
+middle, and the workspace the agent is working in on the right.
+
+| Where | What it is for |
 | --- | --- |
-| **Chat** | the task history, the acceptance checks with the outcome the runtime recorded for each one, the transcript of one task, and a composer that starts a real `livium run` |
-| **Workbench** | the live view of a run: its state, its log, the files it wrote with their digests, and its steps |
-| **Workspace** | the directory the agent works in — browse, preview, download, upload, create, delete, with the runtime home and the evidence directory a click away |
-| **Journal** | the runtime's own records: events, capabilities, deferred work, integrity, and one measured ledger row per task |
-| **Settings** | the provider, the model, the base URL and the API key, plus a real provider probe |
+| **Sidebar** | every task that has run in this home with the runtime's verdict on it, a **New task** button, a theme switch, and the live health of the console (provider, probe age, key, runtime, isolation) |
+| **Conversation** | what you asked, what the model said, every tool call, every refusal by the permission engine, every file written, and the acceptance checks with the outcome the runtime recorded for each one. A file card's **Open** button shows that file in the workspace panel |
+| **Workspace panel** | the folder the agent works in: browse, preview, download, upload (drag and drop works), new folder, delete, and what changed in the last three hours. `▥` hides it |
+| **Run details** | folded into the conversation above the messages: the process, its live output, the steps, and the files it wrote with their digests |
+| **Journal / Settings** | the runtime's own records — events, capabilities, deferred work, integrity, one measured ledger row per task — and the provider, model, base URL and API key |
+
+`Enter` starts a task, `Shift+Enter` writes a new line, `＋ New task` clears the view,
+`⌘/Ctrl-K`-style command palettes are deliberately absent: this console does one thing.
 
 The console has three settings of its own; they are environment variables because they
 belong to the console's own process, and `.env` is the runtime's file:
