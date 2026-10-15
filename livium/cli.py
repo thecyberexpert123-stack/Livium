@@ -344,6 +344,11 @@ def cmd_capability(args: argparse.Namespace, config: Config) -> int:
                 print(f"\ntests {'PASSED' if result['passed'] else 'FAILED'} "
                       f"(exit {result['exit_code']}) -> status {result['status']}")
             return 0 if result["passed"] else 1
+        if action == "review":
+            evidence = registry.review(args.name)
+            evidence["guardian_gate"] = guardian.promotion_gate(args.name)
+            _print(evidence, args.json)
+            return 0
         if action == "promote":
             capability = registry.promote(
                 args.name, approved_by=args.approved_by,
@@ -352,9 +357,14 @@ def cmd_capability(args: argparse.Namespace, config: Config) -> int:
             _print(capability.as_dict(), args.json)
             if not args.json:
                 print(
-                    "\nPromoted: the module was copied into livium/promoted/ and its tools "
-                    "become callable on the next run."
+                    "\nPromoted: the tested package was copied into this home’s promoted/ "
+                    "directory; its tools become callable on the next run."
                 )
+            return 0
+        if action == "deprecate":
+            capability = registry.deprecate(args.name, approved_by=args.approved_by,
+                                            reason=args.reason)
+            _print(capability.as_dict(), args.json)
             return 0
         if action == "rollback":
             capability = registry.rollback(args.name, reason=args.reason)
@@ -774,9 +784,17 @@ def build_parser() -> argparse.ArgumentParser:
     test = capability_sub.add_parser("test")
     test.add_argument("name")
     test.add_argument("--timeout", type=float, default=120.0)
+    review = capability_sub.add_parser("review",
+                                       help="read the exact tested/installed bytes and guardian gate")
+    review.add_argument("name")
     promote = capability_sub.add_parser("promote")
     promote.add_argument("name")
     promote.add_argument("--approved-by", required=True)
+    deprecate = capability_sub.add_parser("deprecate",
+                                          help="human-attributed retirement of an active tool")
+    deprecate.add_argument("name")
+    deprecate.add_argument("--reason", required=True)
+    deprecate.add_argument("--approved-by", required=True)
     rollback = capability_sub.add_parser("rollback")
     rollback.add_argument("name")
     rollback.add_argument("--reason", required=True)

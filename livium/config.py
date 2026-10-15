@@ -276,7 +276,7 @@ class Config:
             prompts=(REPO_ROOT / "livium" / "prompts").resolve(),
             capability_lab=(home / "capability-lab").resolve(),
             promoted=_resolve_under_home(
-                _env("LIVIUM_PROMOTED_DIR", str(REPO_ROOT / "livium" / "promoted")) or "",
+                _env("LIVIUM_PROMOTED_DIR", str(home / "promoted")) or "",
                 home),
         )
 

@@ -12,6 +12,25 @@
 
 import path from "node:path";
 
+export function artifactLocation(backendEnv, absolute) {
+  if (!absolute || !path.isAbsolute(absolute)) return { root: null, relative_path: null };
+  const home = backendEnv.LIVIUM_HOME || path.dirname(backendEnv.LIVIUM_WORKSPACE || "");
+  const roots = {
+    workspace: backendEnv.LIVIUM_WORKSPACE,
+    lab: home ? path.join(home, "capability-lab") : null,
+    promoted: backendEnv.LIVIUM_PROMOTED_DIR,
+  };
+  const target = path.resolve(absolute);
+  for (const [root, raw] of Object.entries(roots)) {
+    if (!raw) continue;
+    const base = path.resolve(raw);
+    if (target === base || target.startsWith(base + path.sep)) {
+      return { root, relative_path: path.relative(base, target) };
+    }
+  }
+  return { root: null, relative_path: null };
+}
+
 export function relativeToWorkspace(backendEnv, absolute) {
   const workspace = backendEnv.LIVIUM_WORKSPACE || "";
   if (!workspace) return { path: absolute, in_workspace: false };
@@ -89,14 +108,16 @@ export function transcriptOf(taskId, { task, steps, verification }, events, back
         }
         break;
       case "tool_write": {
-        const where = relativeToWorkspace(backendEnv, String(payload.path ?? ""));
-        artifacts.push({ ...where, bytes: payload.bytes, sha256: payload.sha256,
+        const absolute = String(payload.path ?? "");
+        const where = relativeToWorkspace(backendEnv, absolute);
+        const location = artifactLocation(backendEnv, absolute);
+        artifacts.push({ ...where, ...location, bytes: payload.bytes, sha256: payload.sha256,
                          purpose: payload.purpose, at: event.ts,
                          verified_by_readback: payload.verified_by_readback ?? null });
         messages.push({ role: "artifact", at: event.ts, title: where.path,
                         body: `wrote ${payload.bytes ?? "?"} byte(s)` +
                               (payload.sha256 ? `, sha256 ${String(payload.sha256).slice(0, 16)}…` : ""),
-                        meta: { in_workspace: where.in_workspace } });
+                        meta: { in_workspace: where.in_workspace, ...location } });
         break;
       }
       case "boundary_violation": {
@@ -132,11 +153,17 @@ export function transcriptOf(taskId, { task, steps, verification }, events, back
                         meta: { discovery_id: payload.discovery_id } });
         break;
       case "capability_proposed":
-      case "capability_promoted":
+      case "capability_scaffolded":
       case "capability_tested":
+      case "capability_test_refused":
+      case "capability_promoted":
+      case "capability_maintained":
+      case "capability_deprecated":
+      case "capability_rollback":
         messages.push({ role: "system", at: event.ts, title: event.type.replace(/_/g, " "),
                         body: String(payload.name ?? payload.capability ?? ""),
-                        meta: { status: payload.status } });
+                        meta: { status: payload.status, reason: payload.reason,
+                                manifest_sha256: payload.manifest_sha256 } });
         break;
       case "approval_requested":
         messages.push({ role: "refusal", at: event.ts, title: "waiting for a human",

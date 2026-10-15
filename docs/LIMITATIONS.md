@@ -22,7 +22,10 @@ of protocol` (TLS handshake cut). Consequently:
   whether it is usable.
 
 A task whose provider is unreachable ends `blocked` with the error attached. It never
-reports success, and it never falls back to a canned answer.
+reports success, and it never falls back to a canned answer. Demonstration A1 now
+attempts the *task*, not just a probe, through that same real provider; A2 is a
+separately labelled scripted run. Older A1 evidence had mistakenly used the scripted
+client for its task after a failed real probe, so it has been replaced.
 
 ## 2. Command execution is not a security sandbox
 
@@ -118,11 +121,22 @@ but two agents writing the same `LIVIUM_HOME` concurrently is not a supported
 configuration. There is no distributed coordination, no queue, and no resumption of a
 task in a different process while the first still runs.
 
-## 9. Promoted capabilities load at startup
+## 9. Promoted capabilities load at task startup, not mid-task
 
-Promotion copies a validated module into `livium/promoted/` and it is callable from
-the next agent startup. There is no hot reload; a long-running agent does not pick up
-a promotion without restarting. Rollback is likewise a file operation plus restart.
+Promotion atomically copies the *whole tested package* (entrypoint, helpers, assets and
+tests) to `$LIVIUM_HOME/promoted/NAME/`, by default. Its database row records the
+sha256 of every file; a new agent process checks the active status and every digest
+**before importing** any code. A naked file dropped into the directory or a package
+whose bytes changed after promotion is refused and reported. A long-running process
+that already imported a tool does not hot-reload a promotion or rollback: restart it.
+The Studio starts a fresh `livium run` process for each task, so its *next* task sees
+the new set; restart `livium serve` to refresh its separate read-only tool catalog.
+
+**Migration:** a pre-0.5 installation may have a flat `livium/promoted/NAME.py` and
+no file-manifest columns. This version will **not import it**, even on the old home, because
+its code is not tied to the old test result. The human must copy or inspect its
+source and tests in the lab, re-run `capability test`, and promote it again to the
+per-home directory. The old file is not silently trusted, deleted or migrated.
 
 ## 10. The viewer is a local operations console
 
@@ -152,11 +166,14 @@ every call, so "tests passed" and "the tool does nothing" were both true at the 
 time. Promotion was therefore reachable from a placeholder -- the lifecycle looked
 enforced and was not.
 
-Promotion now requires evidence that could have failed: at least one test that
-executes the capability and asserts on its output, and an interface that is not the
-scaffold's placeholder. `capability test` refuses the generated stub, and a regression
-test pins it (`tests/test_capabilities.py::PlaceholderTests`). The general lesson is in
-`AGENT-EXPERIENCE.md`: a check that cannot fail is not a check.
+The test runner refuses the generated implementation while scaffold markers remain,
+requires at least one `test_*.py`, actually runs unittest, checks the declared tool
+schema in a separate limited subprocess, and ties **all** lab files to their digests.
+The tests in this repository call the capability and assert an observed output; the
+runtime cannot prove that an arbitrary future author's assertions are meaningful.
+An author who writes `assertTrue(True)` can get a green test result, but not an
+objective proof of behaviour. The human review is therefore a real responsibility,
+not a checkbox outsourced to the model.
 
 ## 13. The guardian's own instructions are the agent's, not the model's
 
@@ -271,9 +288,17 @@ and journal row it displays was produced by the Python runtime.
 required `X-Livium-Studio` header on writes (which stops a cross-site form, not a local
 process). Anything that can reach the port can start a task, read the workspace and
 delete files in it, so the default binding is `127.0.0.1` and `--host 0.0.0.0` is an
-explicit, warned-about act. The API key itself is *not* exposed: it is stored 0600, sent
-to children through the environment, and never returned by the API — but the runtime it
-drives holds a credential, and a caller who can reach the port can spend it.
+explicit, warned-about act. `settings.json` is mode 0600 and the Studio's HTTP
+workspace browser refuses it for preview, raw download, overwrite or deletion (a
+regression test covers all four). API responses give only a key hint; extra
+cloud/environment values are write-only in the settings response (their names remain
+visible). The proxy redacts known keys and long configured values from JSON replies,
+including escaped values, but short extra values in arbitrary task data cannot be
+reliably scrubbed without corrupting ordinary content. A separate workspace file
+containing a copied secret is still a downloadable file: do not put secrets in tasks
+or workspace artifacts. This is *not* filesystem isolation: arbitrary Python run as
+the same OS user may still read the key from its file. And a caller who can reach
+the port can spend it by starting tasks.
 
 **Where the transcript can be incomplete.** `lib/session.mjs` renders only the events the
 runtime journalled. A task that predates the journal, a run interrupted before any event
@@ -287,3 +312,34 @@ report when there is one and a labelled estimate otherwise.
 criteria, not a judgement of the work's quality: a criterion can be weak, and a task with
 no criteria is shown as *unverified* for exactly that reason. The Studio does not add a
 criterion, and nothing it displays should be read as one.
+
+## 21. Authored Python is not a security sandbox; named-human promotion is an operational gate
+
+The agent can create a lab, author a Python module with helpers and data, write tests,
+and invoke the test runner itself. The validated state now binds the entire lab to
+SHA-256 digests, and promotion refuses any change after the tests; the loader refuses
+unregistered, rolled-back or changed packages before import. Integration tests run
+this path from a task through the Node console, a human CLI call, a second task that
+uses the tool, then named-human deprecation and rollback. Those are real
+filesystem/SQLite/subprocess actions, but the model's chosen calls are **scripted
+test-double replies**. No real provider has
+driven a capability-development task in this environment.
+
+`Runner` can verify network isolation here but reports `filesystem_confined=False`.
+A `run_command` or a capability's tests can execute arbitrary Python with the OS
+user's filesystem access; promoted Python also executes in-process with the same
+privileges as the agent. A command could write the SQLite DB or promoted files
+without going through the tool or human gate. The CLI's `--approved-by` string is
+**attribution**, not authentication of a human identity. These facts are why a
+manifest check is an *integrity check*, not a claim of resistance to malicious code
+running as the same user. Do not run untrusted modules, or put a real API key in a
+home whose same-UID Python you don't trust. Use a separate unprivileged OS identity,
+a real filesystem sandbox and an authenticated out-of-band operator boundary if you
+need a hard guarantee against an adversarial model. The Studio offers no promotion
+HTTP route because, with no login, a button labelled “human approve” would be false.
+
+A successful test is also not proof that the generated capability is correct,
+safe, or useful on other inputs. It proves the executed assertions for the recorded
+bytes. The human must examine the tests and code before activating them. The host
+still needs a reachable model provider and a locally configured key for a real
+model to attempt this workflow.

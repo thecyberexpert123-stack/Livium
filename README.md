@@ -10,9 +10,10 @@ interrupted work by inspecting the world instead of replaying it, and develops n
 capabilities through a lifecycle where nothing becomes trusted just because it was
 written.
 
-**No third-party dependencies.** Python 3.11 standard library only: `sqlite3`,
-`http.client`/`urllib`, `subprocess`, `unittest`. Nothing to install, nothing to
-audit beyond this repository.
+**Core:** Python 3.11 standard library only (`sqlite3`, `http.client`/`urllib`,
+`subprocess`, `unittest`). **Studio:** React + Vite + a real Node.js server; npm
+packages are used to build and test the browser UI. Its committed production bundle
+runs with Node alone, without an npm install or a build step on the deployed host.
 
 ---
 
@@ -43,16 +44,17 @@ python3 -m livium run "write notes.md summarising README.md" \
 python3 -m livium serve --port 8787      # http://127.0.0.1:8787
 ```
 
-### Or run it with no network and no credential
+### Reproduce without a credential
 
-Livium's agent runtime needs a model to drive it. Everything *around* the model is
-independently runnable and testable:
+Livium's agent runtime needs a model to drive it. The Python and UI suites run without
+external network access. The six-demonstration script attempts a real provider for
+A1; if unreachable, it records a blocked task, and only A2 uses a labelled test double:
 
 ```bash
-python3 -m unittest discover -s tests -t tests      # 359 tests, ~30s, no network
-python3 demos/run_demonstrations.py                 # the six mandatory demonstrations
-python3 demos/run_mission_demos.py --approve-as "Your Name"   # the mission demonstrations
-cd ui && node --test                                # 46 tests for the operator console
+python3 -m unittest discover -s tests -t tests      # 368 tests, no external network
+python3 demos/run_demonstrations.py                 # six demonstrations; A1 attempts a real provider
+python3 demos/run_mission_demos.py --approve-as "Your Name"   # ten mission demonstrations
+cd ui && npm ci && npm test                         # build + 53 Node/API + 5 React tests
 ```
 
 ---
@@ -78,8 +80,8 @@ If the provider is unreachable, the task ends `blocked`, with the real error, an
 **no completion is invented**. That is the behaviour this repository's own
 environment exercises: `api.openai.com`, `api.anthropic.com` and
 `generativelanguage.googleapis.com` are not reachable from the sandbox it was built
-in, so demonstration A is recorded as blocked-by-environment (see
-`docs/LIMITATIONS.md`).
+in, so demonstration A1's real task is recorded as blocked-by-environment while
+A2 is separately labelled a scripted test-double run (see `docs/LIMITATIONS.md`).
 
 ---
 
@@ -94,10 +96,10 @@ in, so demonstration A is recorded as blocked-by-environment (see
 | **Context management** | `livium status` shows `context_report` rows: what was included, what was omitted, the real budget |
 | **Task recovery** | `livium resume`; demonstration D confirms an interrupted write from the file on disk |
 | **Verification** | acceptance criteria are executed by the harness; `livium events --type task_verified` |
-| **Capability lifecycle** | `livium capability list/test/promote/rollback`; demonstrations E and F |
+| **Capability lifecycle** | the agent can propose → scaffold → write source/helpers/tests → run actual tests to Validated; a named human reviews exact digests and promotes, a later process loads the new tool; `tests/test_capabilities.py` and the Studio live API test |
 | **Guardian integrity** | `livium guardian status`; tamper tests in `tests/test_guardian.py` |
 | **Step routing** | `livium events --type route_decision`; `tests/test_router.py` |
-| **Selective exposure** | `livium status` context reports list the interfaces sent per step — 5 to 7 of 13 in the recorded mission run |
+| **Selective exposure** | context reports list the interfaces sent per step; the catalog stays lazy and the step ceiling is 10 |
 | **Approval boundary** | `livium approvals --pending` then `--approve <id> --by "Your Name"`; the operation runs once, and only after the decision |
 | **Token accounting** | `livium status` ledger rows: `prompt_tokens_actual` is `NULL` unless the provider reported usage; the estimate is a separate column |
 | **Mission acceptance tests** | `python3 -m unittest discover -s tests -t tests -p "test_mission.py"` |
@@ -113,7 +115,7 @@ livium status                     configuration, stats, capabilities, recent con
 livium events [--type T]          read the append-only journal
 livium memory search "query"      ranked full-text retrieval with provenance and trust
 livium memory list|history|duplicates|consolidate|stale
-livium capability list|show|propose|scaffold|test|promote|rollback|reject
+livium capability list|show|propose|scaffold|test|review|promote|deprecate|rollback|reject
 livium approvals [--pending] [--history] | --approve ID --by NAME | --reject ID --by NAME
 livium guardian status|baseline --approved-by NAME|propose-change …
 livium discovery list|show|review|update ID STATUS --note WHY|investigate ID
@@ -129,17 +131,23 @@ livium serve [--port 8787]        HTTP API + live viewer
 
 ## Studio
 
-`ui/` is an operator console for the runtime, written in Node with **no npm
-dependencies** and no build step:
+`ui/` is a **React + Vite** component application served by a **Node.js**
+operator server. A built production bundle is committed in `ui/public/`; you need
+Node >=22.12 to run it, but not npm on the deployed machine:
 
 ```bash
-node ui/server.mjs --port 8899          # http://127.0.0.1:8899
-node ui/server.mjs --help               # --port, --home, --host, --print-home
-cd ui && node --test                    # the console's own tests
+node ui/server.mjs --port 8899          # http://127.0.0.1:8899, one UI process
+cd ui && npm ci && npm test             # rebuild, test real server + React components
+# Development only, optional hot reload: in one terminal run node ui/server.mjs;
+# in another: cd ui && npm run dev. Vite proxies same-origin /api and /studio/api
+# to http://127.0.0.1:8877 by default (set LIVIUM_STUDIO_PROXY for another port).
 ```
 
-It starts `livium serve` for you on a free port and proxies to it, so the buttons and
-the viewer act on the same runtime, the same database and the same permission engine.
+Production uses **one browser-facing Node server**, not a parallel Vite server. It
+spawns `livium serve` on loopback and proxies its actual data, plus one `livium run`
+process per task. Node is not a second permission engine, verifier or model client.
+The checked-in bundle has a source digest (`ui/public/source-hash.txt`); tests fail
+if a source edit is shipped without rebuilding it.
 
 It is laid out the way a chat window is: tasks on the left, the conversation in the
 middle, and the workspace the agent is working in on the right.
@@ -150,7 +158,8 @@ middle, and the workspace the agent is working in on the right.
 | **Conversation** | what you asked, what the model said, every tool call, every refusal by the permission engine, every file written, and the acceptance checks with the outcome the runtime recorded for each one. A file card's **Open** button shows that file in the workspace panel |
 | **Workspace panel** | the folder the agent works in: browse, preview, download, upload (drag and drop works), new folder, delete, and what changed in the last three hours. `▥` hides it |
 | **Run details** | folded into the conversation above the messages: the process, its live output, the steps, and the files it wrote with their digests |
-| **Journal / Settings** | the runtime's own records — events, capabilities, deferred work, integrity, one measured ledger row per task — and the provider, model, base URL and API key |
+| **Capabilities** | proposed, experimental, validated, active, maintained and rolled-back capabilities, test output, SHA-256 manifest of *all* lab files, current-vs-tested comparison and the Guardian's live gate. Open lab code in the workspace dock; human promotion stays CLI-only because the Studio has no login |
+| **Journal / Settings** | the runtime's own records — events, deferred work, integrity, measured ledger rows — and the provider, model, base URL and API key |
 
 `Enter` starts a task, `Shift+Enter` writes a new line, `＋ New task` clears the view,
 `⌘/Ctrl-K`-style command palettes are deliberately absent: this console does one thing.
@@ -170,14 +179,53 @@ Three things are worth knowing before you use it:
 - **The API key is written, not remembered.** It goes to `<studio home>/settings.json`
   (mode 0600, directory 0700) and reaches the runtime through the child process
   environment. The API returns whether a key is set, how long it is and a hint — never
-  the key — and outgoing error text is scrubbed. The Studio is not in the chat: do not
-  paste secrets into a conversation.
+  the key — and outgoing error text is scrubbed. The home file browser refuses
+  `settings.json`, even as a raw download. Additional environment values are also
+  write-only in the UI: their names are shown but the values are never sent back.
+  **This is an HTTP guarantee, not an OS isolation guarantee:** arbitrary Python
+  run as the same user can still read that file. Do not paste secrets into a task
+  or chat message.
 - **It is a console, not a second agent.** Every permission decision, verification and
   journal row is produced by the Python runtime; the Studio starts a real `livium run`
   and shows what the runtime recorded. A panel with no records says so instead of
   rendering something plausible.
 - **It has no authentication.** It binds `127.0.0.1` by default; `--host 0.0.0.0` is for
   when you put your own authentication in front of it, and the banner warns when you do.
+
+### Building a reusable capability
+
+The agent has real `request_capability`, `capability_scaffold`, `write_file`,
+`capability_test` and `capability_status` tools. It can compose or reuse existing
+tools first, then create a named lab package (`<home>/capability-lab/<name>/`),
+write arbitrary Python helpers/resources and behaviour tests there, and run those
+tests under the runtime's *reported* isolation. Passing tests record a digest for
+every authored file and move the capability to **Validated**. A scaffold alone
+cannot pass. Validated code is still unavailable as a tool.
+
+The human can inspect the code/tests in the Studio's **Capabilities** sheet and
+compare the live lab digest to the tested one; or use the CLI:
+
+```bash
+python3 -m livium capability review NAME
+# If needed, after inspecting the protected files:
+python3 -m livium guardian baseline --approved-by "Your Name"
+python3 -m livium capability promote NAME --approved-by "Your Name"
+# A NEW task loads the new tool if the installed package still matches the approval.
+python3 -m livium capability deprecate NAME --approved-by "Your Name" --reason "superseded"
+# Or withdraw a defective tool while preserving the rollback record:
+python3 -m livium capability rollback NAME --reason "why it was withdrawn"
+```
+
+Promotion copies the **whole package** (not just one `.py`) into
+`$LIVIUM_HOME/promoted/NAME/`: helpers, data and tests. A post-validation edit
+requires re-testing; an unregistered or altered promoted package is refused
+*before import*. The first successful call moves Active to Maintained. The review
+step is an attributed **workflow**, not strong human authentication: the Studio
+has no login, and `run_command`/promoted Python has the OS user's filesystem
+privileges. For adversarial untrusted code, use a separate OS identity or a real
+filesystem sandbox; see `docs/LIMITATIONS.md` §21. A real model has not driven
+this build loop in this sandbox: the integration tests deliberately use a labelled
+scripted test double, never call it model-verified.
 
 ---
 
@@ -196,7 +244,7 @@ truth). The important ones:
 | `LIVIUM_NETWORK_ALLOWLIST` | empty | hosts the agent may reach; empty means none |
 | `LIVIUM_MAX_STEPS` / `LIVIUM_MAX_TOOL_CALLS` / `LIVIUM_MAX_SECONDS` | 12 / 40 / 900 | loop stopping conditions |
 | `LIVIUM_MAX_RETRIES_PER_TOOL` | 2 | how often one recoverable operation may be retried before the router changes approach |
-| `LIVIUM_PROMOTED_DIR` | `livium/promoted` | where promoted capabilities are installed; relative paths resolve under `LIVIUM_HOME` |
+| `LIVIUM_PROMOTED_DIR` | `$LIVIUM_HOME/promoted` | per-home, human-promoted packages with source/test manifests; relative paths resolve under `LIVIUM_HOME` |
 | `LIVIUM_APPROVAL_WRITE_ROOTS` | empty | paths the agent may write **only after a human approves** that specific call |
 | `LIVIUM_APPROVAL_BINARIES` | empty | programs the agent may run only after a human approves that specific call |
 | `LIVIUM_EXTRA_PROTECTED_PATHS` | empty | files this deployment refuses to let the agent write, watched and recorded like the built-in surface |
@@ -225,8 +273,8 @@ Run `python3 -m livium doctor --json` for the complete effective configuration.
 ## Honest status
 
 Implemented and verified: task loop, tools, permissions, memory, context, recovery,
-verification, capability lifecycle, guardian controls, viewer, HTTP API, 358 automated
-tests, deterministic step routing, selective tool exposure, the per-task learning
+verification, capability lifecycle, guardian controls, viewer, HTTP API, the current
+Python/Node/React suites above, deterministic step routing, selective tool exposure, the per-task learning
 ledger, human-approved operations that run exactly once per decision, an append-only
 integrity record with an enforced review/approval/recovery workflow, and a deferred
 discovery queue whose follow-up investigations run as their own tasks on a budget that is

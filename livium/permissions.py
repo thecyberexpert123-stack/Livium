@@ -45,7 +45,7 @@ GIT_ALLOWED_SUBCOMMANDS = frozenset(
 #: one of these is not attributable to a person, which is the only property that makes
 #: it a decision rather than a state change the agent could have arranged for itself.
 UNATTRIBUTED_NAMES = frozenset({
-    "anonymous", "anon", "unknown", "unspecified", "none", "nobody", "n/a", "na", "-",
+    "", "anonymous", "anon", "unknown", "unspecified", "none", "nobody", "n/a", "na", "-",
     "agent", "livium", "self", "auto", "model", "system", "root", "admin",
 })
 

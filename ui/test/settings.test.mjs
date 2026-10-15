@@ -74,6 +74,23 @@ test("what the UI may see never contains the key", async () => {
   assert.equal("api_key" in shown, false);
 });
 
+test("extra environment values are write-only even when the variable name is custom", async () => {
+  const home = await tempHome();
+  const secret = "custom-value-no-key-shape-at-all";
+  const settings = await writeSettings(home, { extra: {
+    PRIVATE_DEPLOYMENT_CREDENTIAL: secret, LIVIUM_MAX_STEPS: "9",
+  } });
+  const shown = publicSettings(settings);
+  assert.deepEqual(shown.extra, { PRIVATE_DEPLOYMENT_CREDENTIAL: null, LIVIUM_MAX_STEPS: null });
+  assert.equal(JSON.stringify(shown).includes(secret), false);
+  assert.equal(scrub(`debug: ${secret}`, settings).includes(secret), false);
+  const kept = await writeSettings(home, { provider: "ollama", extra: {} });
+  assert.equal(kept.extra.PRIVATE_DEPLOYMENT_CREDENTIAL, secret,
+               "saving another field must not replace a secret with a redaction marker");
+  const cleared = await writeSettings(home, { extra: { PRIVATE_DEPLOYMENT_CREDENTIAL: "" } });
+  assert.equal("PRIVATE_DEPLOYMENT_CREDENTIAL" in cleared.extra, false);
+});
+
 test("an unset key is reported as unset rather than blank", async () => {
   const home = await tempHome();
   const shown = publicSettings(await readSettings(home));
@@ -117,6 +134,12 @@ test("scrub removes the key from anything on its way out", () => {
   assert.match(scrub("Authorization: Bearer sk-abcdefghijklmnopqrstuvwx", ""), /redacted/);
   assert.match(scrub("key-0123456789abcdefghij", ""), /redacted/);
   assert.equal(scrub("nothing secret here", KEY), "nothing secret here");
+  const custom = "a-custom-secret-in-an-unremarkable-variable";
+  assert.equal(scrub(`the value was ${custom}`, {
+    api_key: KEY, extra: { CUSTOM_OPTION: custom, LIVIUM_MAX_STEPS: "12" },
+  }).includes(custom), false, "extra values must be write-only even with ordinary names");
+  assert.equal(scrub("12 steps", { api_key: "", extra: { LIVIUM_MAX_STEPS: "12" } }),
+               "12 steps", "short non-secret values should not corrupt normal responses");
   assert.equal(scrub(null, KEY), "");
 });
 

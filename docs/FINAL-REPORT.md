@@ -103,3 +103,46 @@ provider openai_compatible:gpt-4o-mini (probe: openai-compatible@https://api.ope
     Unresolved changes in the record: none. A detection is not a prevention: the layer notices, attributes, records and freezes; an agent with operating-system privileges is beyond what it can stop, and docs/LIMITATIONS.md section 15 says so in those words.
 
 Read docs/LIMITATIONS.md for the boundaries this report cannot cross.
+
+---
+
+## 0.5.0 update — evidence after the Studio and extension changes
+
+The numbered report above is a **historical 0.3/0.4 snapshot** generated from a
+specific scripted-double home. Its counts, `livium/promoted/` location and
+“front end has no dependencies” statements describe that release, not 0.5.0.
+Do not read them as current guarantees.
+
+- Current code: Python 3.11 stdlib agent, schema v5, React/Vite component Studio
+  served by Node from checked-in assets. Tests: **368 Python**, **53 Node/API** and
+  **5 React component** cases passing. The source-hash test prevents shipping a
+  stale production bundle.
+- The agent can now propose, scaffold, write an arbitrary lab package and run its
+  real tests to Validated itself. The tested byte manifest covers source, helpers,
+  data and tests. Read-only CLI/HTTP review compares live bytes. Named-human CLI
+  promotion checks the Guardian, installs the exact package, and the next task can
+  call its new tool. A successful invocation marks it Maintained; human CLI
+  deprecation or rollback prevents subsequent loading. The full chain was exercised
+  through the Studio's task API and a separate CLI process. **All model decisions in
+  that test were supplied by the labelled scripted double.** No real provider
+  drove capability authoring.
+- Tested refusals: a changed test before promotion, a changed module or helper,
+  an unregistered file under `promoted/`, a symlinked scaffold, an unbaselined
+  Guardian, whitespace-only approvers and rollback. The loader rejects altered
+  code before import. Tests do not prove arbitrary generated Python safe or good.
+- API-key hygiene: Studio file browsing no longer allows reading or downloading
+  `<home>/settings.json`, nor overwriting or deleting it; a real-socket regression
+  test pinned that security fix. Proxy redaction now frames responses using their
+  *redacted* byte length and handles escaped key values. **Same-UID arbitrary Python
+  is not filesystem confined and may still read the settings file.** A name on
+  `--approved-by` is attribution, not cryptographic identity verification.
+- The six mandatory demonstrations and M1–M10 were rerun. A1's real-provider
+  probe and task now use the same real client: both failed here with the reported
+  connection error, and the task stayed blocked with no fabricated completion.
+  A2 is the *separate* scripted-double task. Earlier A1 evidence misleadingly
+  started a scripted task after a failed real probe; see the refreshed
+  `docs/evidence/demonstrations.{json,md}`.
+- The default promotion path is now `$LIVIUM_HOME/promoted`. Older unmanifested
+  flat files require an explicit review and re-promotion. For exact limitations,
+  migration and the environment's absent model-provider egress, see
+  `docs/LIMITATIONS.md` §§9, 11, 20–21 and `CHANGELOG.md` 0.5.0.

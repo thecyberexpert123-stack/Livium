@@ -1,6 +1,7 @@
 // Studio settings: the provider, the model, and the API key.
 //
-// The key is the one secret this project handles, so the rules are explicit:
+// The configured API key is primary, but extra environment entries can carry
+// deployment credentials too. None of their values may be echoed in responses:
 //
 //   * it is written to `<studio home>/settings.json`, mode 0600, in a directory
 //     mode 0700 -- the same file holds no other secret and is never in the repo;
@@ -132,7 +133,10 @@ export function publicSettings(settings) {
     provider: settings.provider,
     model: settings.model,
     base_url: settings.base_url,
-    extra: { ...(settings.extra ?? {}) },
+    // Extra variables are arbitrary: a deployment may put credentials under a
+    // custom name. Never reflect their values back to the browser. Absence from
+    // a PATCH preserves them; NAME= (empty) explicitly clears one.
+    extra: Object.fromEntries(Object.keys(settings.extra ?? {}).map(name => [name, null])),
     api_key_set: key.length > 0,
     api_key_length: key.length,
     api_key_hint: hint(key),
@@ -148,10 +152,20 @@ function hint(key) {
 }
 
 /** Remove any occurrence of the key (and long secrets) from text on its way out. */
-export function scrub(text, key) {
+export function scrub(text, keyOrSettings) {
   let out = String(text ?? "");
-  if (key && key.length >= 8) {
-    out = out.split(key).join("«the API key was here and has been redacted»");
+  const settings = typeof keyOrSettings === "object" ? keyOrSettings : null;
+  // An extra variable with an innocuous name can still hold a credential. Only
+  // reasonably long values are scrubbed from free text: replacing "1" (a common
+  // configuration value) in every API response would destroy unrelated content.
+  const secrets = (settings
+    ? [settings.api_key, ...Object.values(settings.extra ?? {})]
+    : [keyOrSettings]).filter(value => typeof value === "string" && value.length >= 8)
+      .sort((a, b) => b.length - a.length);
+  for (const secret of secrets) {
+    if (typeof secret === "string" && secret.length >= 8) {
+      out = out.split(secret).join("«a stored credential was here and has been redacted»");
+    }
   }
   // Provider keys have recognisable shapes; an unknown one that leaks through some
   // error path is still redacted rather than shown in a browser.

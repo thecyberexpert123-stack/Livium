@@ -116,6 +116,42 @@ class TaskExecutionTests(AgentFixture):
         self.assertIn("simulated total egress failure", startup["provider_probe"]["detail"])
 
 
+class DemonstrationHonestyTests(LiviumTestCase):
+    def test_unreachable_real_provider_demo_never_runs_a_scripted_a1_task(self) -> None:
+        """The A1 probe and task must use the same real transport, even on failure."""
+
+        import os
+        import socket
+        from unittest.mock import patch
+
+        from demos.run_demonstrations import Demonstrations
+
+        # A bound, non-listening loopback port fails without any external network.
+        with socket.socket() as unused:
+            unused.bind(("127.0.0.1", 0))
+            url = f"http://127.0.0.1:{unused.getsockname()[1]}/v1"
+            with patch.dict(os.environ, {
+                "LIVIUM_PROVIDER": "openai_compatible", "LIVIUM_BASE_URL": url,
+                "LIVIUM_MODEL": "local-unreachable", "LIVIUM_API_KEY": "",
+                "LIVIUM_MODEL_TIMEOUT": "1", "LIVIUM_MODEL_RETRIES": "0",
+                # Even if the ambient environment enables the double, A1 must not.
+                "LIVIUM_ALLOW_TEST_DOUBLE": "1",
+            }):
+                demo = Demonstrations(self.home.dir, approve_as=None)
+                demo.demonstration_a()
+
+        a1, a2 = demo.results
+        self.assertEqual(a1["outcome"], "blocked by environment")
+        self.assertFalse(a1["evidence"]["provider_probe"]["ok"])
+        self.assertFalse(a1["evidence"]["is_test_double"])
+        self.assertEqual(a1["evidence"]["task_status"], "blocked")
+        self.assertIn("model unavailable", a1["evidence"]["error"])
+        self.assertEqual(a1["evidence"]["model_calls"], 1)
+        self.assertEqual(a1["evidence"]["tool_calls"], 0)
+        self.assertEqual(a2["outcome"], "verified")
+        self.assertTrue(a2["evidence"]["is_test_double"])
+
+
 class BoundaryAndControlTests(AgentFixture):
     def test_a_denied_operation_is_recorded_and_not_retried(self) -> None:
         agent = self.make_agent([
@@ -289,7 +325,7 @@ class CapabilityContextTests(AgentFixture):
 
         # A genuinely new process-level agent, which loads promoted capabilities.
         promoted_dir = registry.promoted_dir
-        self.assertTrue((promoted_dir / "peek.py").exists())
+        self.assertTrue((promoted_dir / "peek" / "peek.py").exists())
         # A new agent instance: the promoted module is copied into a *temporary*
         # promoted directory by this test, so the load path is exercised without
         # installing anything into the repository.

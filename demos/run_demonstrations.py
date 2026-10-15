@@ -56,11 +56,13 @@ class Demonstrations:
     # -- helpers ----------------------------------------------------------
     def env(self, **extra: str) -> dict[str, str]:
         env = dict(os.environ)
+        env.pop("LIVIUM_SCRIPT_FILE", None)  # never inherit an unrelated double's script
         env.update({
             "LIVIUM_HOME": str(self.home),
             "LIVIUM_DB": str(self.home / "livium.db"),
             "LIVIUM_WORKSPACE": str(self.home / "workspace"),
             "LIVIUM_EVIDENCE": str(self.home / "evidence"),
+            "LIVIUM_PROMOTED_DIR": str(self.home / "promoted"),
             "LIVIUM_ALLOW_TEST_DOUBLE": "1",
             "LIVIUM_PROVIDER": "scripted",
         })
@@ -89,24 +91,54 @@ class Demonstrations:
         print("DEMONSTRATION A — real task execution")
         print("=" * 78)
 
-        # 1. Try the operator's real provider first.
-        real = Config.load(env=_clean_env())  # the ambient configuration
-        probe_agent = LiviumAgent(real)
-        try:
-            probe = probe_agent.start()["provider_probe"]
-        finally:
-            probe_agent.close()
+        # Keep the operator's provider/model/credential, but pin all state to this
+        # throwaway home. The test double is configured separately for A2 below:
+        # a failed real probe must never silently turn the A1 *task* into a double.
+        provider = os.environ.get("LIVIUM_PROVIDER") or "openai_compatible"
+        real_env = self.env(LIVIUM_PROVIDER=provider,
+                            LIVIUM_PROMOTED_DIR=str(self.home / "promoted"))
+        real_env.pop("LIVIUM_ALLOW_TEST_DOUBLE", None)
+        real_env.pop("LIVIUM_SCRIPT_FILE", None)
 
-        agent = LiviumAgent(Config.load(env=self.env()))
-        agent.start()
-        agent.guardian.record_baseline(approved_by="demonstration setup", force=True)
+        print("\n(A1) Attempting the task through the configured real provider")
+        if provider == "scripted":
+            self.record(
+                "A1 real provider task execution", "blocked by configuration",
+                "LIVIUM_PROVIDER=scripted is a test double, not a configured real provider",
+                {"provider_probe": None, "task_status": None, "model_calls": 0,
+                 "note": "A1 did not claim a real model attempt; configure a real provider."},
+            )
+        else:
+            agent = LiviumAgent(Config.load(env=real_env))
+            try:
+                probe = agent.start()["provider_probe"]
+                agent.guardian.record_baseline(approved_by="demonstration setup", force=True)
+                # The same real client is used for the probe AND the task. Even when
+                # the probe fails, attempt the task and assert its observed failure.
+                run = agent.run_task(
+                    "inspect the workspace and write a one-line summary to summary.md",
+                    [{"kind": "file_exists", "path": "summary.md"}],
+                )
+                if not probe["ok"]:
+                    outcome = "blocked by environment" if (
+                        run.status == "blocked" and run.error and run.model_calls > 0
+                        and not run.is_test_double) else "failed"
+                    detail = f"the configured provider is not usable: {probe['detail']}"
+                else:
+                    outcome = "verified" if run.status == "complete" else "not verified"
+                    detail = run.headline()
+                self.record(
+                    "A1 real provider task execution", outcome, detail,
+                    {"provider_probe": probe, "task_status": run.status, "error": run.error,
+                     "is_test_double": run.is_test_double, "verification": run.verification,
+                     "tool_calls": run.tool_calls, "model_calls": run.model_calls,
+                     "file": str(agent.config.paths.workspace / "summary.md"),
+                     "note": "A1 used only the configured real transport; no completion was fabricated."},
+                )
+            finally:
+                agent.close()
 
-        if probe.get("ok") and not probe.get("is_test_double"):
-            from livium.models import build_client
-
-            agent.client = build_client(real)
-            print(f"real provider reachable: {probe['detail']}")
-
+        print("\n(A2) The same task through the scripted test double (orchestration only)")
         scripted_agent = LiviumAgent(Config.load(env=self.env()), script=[
             {"tool_calls": [{"name": "list_dir", "arguments": {"path": "."}}]},
             {"tool_calls": [{"name": "write_file", "arguments": {
@@ -119,32 +151,6 @@ class Demonstrations:
         ])
         scripted_agent.start()
         scripted_agent.guardian.record_baseline(approved_by="demonstration setup", force=True)
-
-        print("\n(A1) Attempting the task through the configured real provider")
-        if probe.get("ok") and not probe.get("is_test_double"):
-            run = agent.run_task(
-                "inspect the workspace and write a one-line summary to summary.md",
-                [{"kind": "file_exists", "path": "summary.md"}],
-            )
-            outcome = "verified" if run.status == "complete" else "not verified"
-            self.record(
-                "A1 real provider task execution", outcome, run.headline(),
-                {"provider_probe": probe, "status": run.status,
-                 "verification": run.verification, "file": str(
-                     agent.config.paths.workspace / "summary.md")},
-            )
-        else:
-            run = agent.run_task("inspect the workspace and write summary.md")
-            self.record(
-                "A1 real provider task execution", "blocked by environment",
-                f"the configured provider is not usable: {probe.get('detail')}",
-                {"provider_probe": probe, "task_status": run.status, "error": run.error,
-                 "tool_calls": run.tool_calls, "model_calls": run.model_calls,
-                 "note": ("This is the honest path: the agent made a real HTTP attempt, it "
-                          "failed, and the task ended blocked. No completion was fabricated.")},
-            )
-
-        print("\n(A2) The same task through the scripted test double (orchestration only)")
         run = scripted_agent.run_task(
             "inspect the workspace and write a one-line summary to summary.md",
             [{"kind": "file_exists", "path": "summary.md"},
@@ -163,7 +169,6 @@ class Demonstrations:
              "note": ("NO REAL MODEL WAS CALLED. This run demonstrates the loop, tools, "
                       "verification and persistence, nothing about model quality.")},
         )
-        agent.close()
         scripted_agent.close()
 
     # -- B ---------------------------------------------------------------
@@ -361,7 +366,7 @@ class Demonstrations:
         for kind, text, key, verification in [
             ("experience", "reusing the existing command Runner avoided a second timeout path",
              "reuse-runner", "tested"),
-            ("decision", "promoted capabilities are loaded from livium/promoted at startup",
+            ("decision", "human-approved capability packages load from the runtime home's promoted directory on the next run",
              "promotion-path", "verified"),
             ("failure", "the first capability test run failed on ModuleNotFoundError for livium",
              "py-path", "tested"),
@@ -562,14 +567,6 @@ class Demonstrations:
                       json.dumps(result["evidence"], indent=2, default=str)[:4000], "```", ""]
         markdown.write_text("\n".join(lines), encoding="utf-8")
         return markdown
-
-
-def _clean_env() -> dict[str, str]:
-    """The operator's ambient configuration, without the demo overrides."""
-
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LIVIUM_")}
-    env["LIVIUM_HOME"] = str(pathlib.Path(os.environ.get("LIVIUM_HOME", ".livium")).resolve())
-    return env
 
 
 def _sha256(path: pathlib.Path) -> str:

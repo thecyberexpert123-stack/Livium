@@ -1,6 +1,6 @@
 # Mission demonstrations — observed results
 
-Run against `/tmp/livium-release-m3` (a real LIVIUM_HOME). Model replies come from the scripted test double; everything else is the real runtime.
+Run against `/tmp/livium-05-mission-final` (a real LIVIUM_HOME). Model replies come from the scripted test double; everything else is the real runtime.
 
 ## M1 selective retrieval — verified
 
@@ -18,8 +18,8 @@ the store held 37 memory records; 2 reached the prompt and they are exactly the 
     35
   ],
   "all_injected_are_relevant": true,
-  "prompt_chars": 10429,
-  "tokens_estimated": 2980,
+  "prompt_chars": 10824,
+  "tokens_estimated": 3093,
   "included_sections": {
     "instructions": 4,
     "objective": 2,
@@ -38,7 +38,7 @@ the store held 37 memory records; 2 reached the prompt and they are exactly the 
     "tool_info",
     "record_discovery"
   ],
-  "tools_available": 14,
+  "tools_available": 17,
   "route": "execute",
   "model_replies": "scripted test double (stated in every reply record)"
 }
@@ -56,7 +56,7 @@ the capability was found by requirement words, its declared interface was loaded
       "word_count"
     ],
     "test_exit_code": 0,
-    "test_duration_ms": 73,
+    "test_duration_ms": 123,
     "network_isolated": null
   },
   "search_matches": [
@@ -162,10 +162,10 @@ the write was refused as requiring approval, the run stopped instead of retrying
         "id": 1,
         "task_id": "m3-approval",
         "tool": "write_file",
-        "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-release-m3/restricted/release.md\",\"purpose\":\"the release file\"}",
-        "reason": "write needs approval: /tmp/livium-release-m3/restricted/release.md is inside an approval root (/tmp/livium-release-m3/restricted). A human decides, not the agent; see `livium approvals`.",
+        "arguments": "{\"content\":\"v1\\n\",\"path\":\"/tmp/livium-05-mission-final/restricted/release.md\",\"purpose\":\"the release file\"}",
+        "reason": "write needs approval: /tmp/livium-05-mission-final/restricted/release.md is inside an approval root (/tmp/livium-05-mission-final/restricted). A human decides, not the agent; see `livium approvals`.",
         "status": "pending",
-        "created_at": "2026-10-15T09:11:09+00:00",
+        "created_at": "2026-10-15T16:48:07+00:00",
         "decided_at": null,
         "decided_by": null,
         "note": null
@@ -176,7 +176,7 @@ the write was refused as requiring approval, the run stopped instead of retrying
     "decided": true,
     "id": 1,
     "status": "approved",
-    "by": "Aditya",
+    "by": "Arena Test Operator",
     "recorded": true,
     "after_approval": {
       "status": "partial",
@@ -211,7 +211,7 @@ the write was refused as requiring approval, the run stopped instead of retrying
       {
         "id": 1,
         "status": "consumed",
-        "decided_by": "Aditya"
+        "decided_by": "Arena Test Operator"
       }
     ]
   }
@@ -233,8 +233,8 @@ a killed process left one unconfirmed side effect; the resumed run established i
       "intent_id": 3,
       "tool": "write_file",
       "determination": "confirmed_complete",
-      "detail": "/tmp/livium-release-m3/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
-      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792055469502189537 path=/tmp/livium-release-m3/workspace/interrupted.md"
+      "detail": "/tmp/livium-05-mission-final/workspace/interrupted.md matches the intended content exactly (sha256 9d9a4fd0227729dc\u2026), so the write completed even though the state record was not updated; do not repeat it",
+      "evidence": "sha256=9d9a4fd0227729dc5b15a7f389550f3fb5e69d8ee82561e48831966323bc720e size=13 mtime=1792082888298689821 path=/tmp/livium-05-mission-final/workspace/interrupted.md"
     }
   ],
   "intent_rows_after_resume": [
@@ -338,7 +338,7 @@ a reporting transport produced actual counts; a silent one produced nulls and a 
       "prompt_tokens_actual": 2900,
       "completion_tokens_actual": 180,
       "usage_reported_calls": 2,
-      "tokens_estimated": 10173,
+      "tokens_estimated": 10391,
       "task_status": "complete"
     },
     "unreported": {
@@ -346,7 +346,7 @@ a reporting transport produced actual counts; a silent one produced nulls and a 
       "prompt_tokens_actual": null,
       "completion_tokens_actual": null,
       "usage_reported_calls": 0,
-      "tokens_estimated": 10584,
+      "tokens_estimated": 10609,
       "task_status": "complete"
     }
   },
@@ -386,8 +386,8 @@ the task finished complete (verified) through ['execute', 'execute', 'execute', 
       "flagged": "[\"silently\"]",
       "depth": 0,
       "spawned_by": null,
-      "outcome": "investigated as task fba352d511b0 and the harness verified the investigation touched real state. The conclusion below is the task's own claim, not a harness finding: the file names no unit anywhere, so the ambiguity is real: 'bolts: 12' could be a count or a measure",
-      "verification_evidence": "task fba352d511b0: tools executed read_file, finish_task; verification verified; tools/verification: complete; checks: event 'tool_call' recorded at 2026-10-15T09:11:10+00:00"
+      "outcome": "investigated as task a9b610a1a1e2 and the harness verified the investigation touched real state. The conclusion below is the task's own claim, not a harness finding: the file names no unit anywhere, so the ambiguity is real: 'bolts: 12' could be a count or a measure",
+      "verification_evidence": "task a9b610a1a1e2: tools executed read_file, finish_task; verification verified; tools/verification: complete; checks: event 'tool_call' recorded at 2026-10-15T16:48:10+00:00"
     }
   ],
   "ledger": {
@@ -439,7 +439,7 @@ the task finished complete (verified) through ['execute', 'execute', 'execute', 
       "flagged": [
         "silently"
       ],
-      "source_task": "ea042ee65b39",
+      "source_task": "59b94274ee35",
       "spawned_by": null
     }
   ],
@@ -475,27 +475,27 @@ the modification became 1 append-only record(s) and `integrity status` reported 
   "status_after": {
     "status": "tampered",
     "changed": [
-      "/tmp/livium-release-m3/rules.py"
+      "/tmp/livium-05-mission-final/rules.py"
     ],
     "exit": 1
   },
   "recorded_events": [
     {
       "id": 4,
-      "ts": "2026-10-15T09:11:11+00:00",
+      "ts": "2026-10-15T16:48:11+00:00",
       "event": "change_detected",
       "tier": null,
       "paths": [
-        "/tmp/livium-release-m3/rules.py"
+        "/tmp/livium-05-mission-final/rules.py"
       ],
       "observed": {
         "digests": {
-          "/tmp/livium-release-m3/rules.py": "a6ec5b1ff4babf837ab72547b47de7092dc7272dd37c2bf8d9f0692d7e69ed43"
+          "/tmp/livium-05-mission-final/rules.py": "a6ec5b1ff4babf837ab72547b47de7092dc7272dd37c2bf8d9f0692d7e69ed43"
         }
       },
       "expected": {
         "digests": {
-          "/tmp/livium-release-m3/rules.py": "6ba0d22d9f7a2466ed1784567ef7a5662bdbe900ce42ad4d3a8f1511ebc755cf"
+          "/tmp/livium-05-mission-final/rules.py": "6ba0d22d9f7a2466ed1784567ef7a5662bdbe900ce42ad4d3a8f1511ebc755cf"
         }
       },
       "detection": "livium integrity status",
@@ -516,7 +516,7 @@ the modification became 1 append-only record(s) and `integrity status` reported 
       "attributable_to": null,
       "tool": null,
       "revision": {
-        "head": "7076f1edbdcff3e67ad0ed6e0463fa70f6051920",
+        "head": "ba2e5f22df83c2e2a708259b22af6a1a3db8a0e1",
         "working_tree_status": "",
         "last_commit_touching_file": "",
         "note": "git state only; the working tree is not verified by git"
@@ -525,7 +525,7 @@ the modification became 1 append-only record(s) and `integrity status` reported 
   ],
   "review": [
     {
-      "path": "/tmp/livium-release-m3/rules.py",
+      "path": "/tmp/livium-05-mission-final/rules.py",
       "tier": "operational",
       "decision": "requires_review",
       "why_protected": "the configuration protects this path, but the policy does not name it and so cannot yet say what a legitimate change would look like",
@@ -550,10 +550,10 @@ the modification became 1 append-only record(s) and `integrity status` reported 
     "exit": 0,
     "payload": {
       "restored": true,
-      "path": "/tmp/livium-release-m3/rules.py",
+      "path": "/tmp/livium-05-mission-final/rules.py",
       "digest": "6ba0d22d9f7a2466ed1784567ef7a5662bdbe900ce42ad4d3a8f1511ebc755cf",
       "previous": "a6ec5b1ff4babf837ab72547b47de7092dc7272dd37c2bf8d9f0692d7e69ed43",
-      "approved_by": "Aditya"
+      "approved_by": "Arena Test Operator"
     },
     "digest_on_disk_after": "6ba0d22d9f7a2466ed1784567ef7a5662bdbe900ce42ad4d3a8f1511ebc755cf",
     "digest_matches": true
@@ -600,7 +600,7 @@ the task that noticed the observation finished complete (verified) and paid noth
     ],
     "spent": {
       "model_calls": 2,
-      "seconds": 0.026,
+      "seconds": 0.025,
       "steps": 3,
       "tokens": 0
     },

@@ -147,6 +147,12 @@ TOOL_META: dict[str, dict[str, Any]] = {
                       "permissions": [], "side_effects": True},
     "request_capability": {"purpose": "propose a capability that does not exist yet",
                            "permissions": [], "side_effects": True},
+    "capability_scaffold": {"purpose": "create a lab for a proposed capability; not an implementation",
+                            "permissions": ["capability lab"], "side_effects": True},
+    "capability_test": {"purpose": "run a capability's real tests and record exact file digests",
+                        "permissions": ["capability lab", "command"], "side_effects": True},
+    "capability_status": {"purpose": "read the lifecycle, implementation paths and test evidence",
+                          "permissions": [], "side_effects": False},
     "finish_task": {"purpose": "declare the task finished so the harness can verify it",
                     "permissions": [], "side_effects": False},
     "tool_info": {"purpose": "get the full interface of a tool before calling it",
@@ -188,6 +194,9 @@ class ToolRegistry:
             "memory_update": self._memory_update,
             "memory_forget": self._memory_forget,
             "request_capability": self._request_capability,
+            "capability_scaffold": self._capability_scaffold,
+            "capability_test": self._capability_test,
+            "capability_status": self._capability_status,
             "record_discovery": self._record_discovery,
             "discovery_update": self._discovery_update,
             "finish_task": self._finish_task,
@@ -371,6 +380,42 @@ class ToolRegistry:
                     },
                     "required": ["name", "requirement", "reuse_analysis"],
                 },
+            },
+            {
+                "name": "capability_scaffold",
+                "description": (
+                    "Create the lab directory for an existing Proposed capability, with a "
+                    "placeholder implementation and tests. Use write_file to replace BOTH "
+                    "with real behaviour and meaningful assertions. You can also write a "
+                    "complete implementation directly without scaffolding. Never promote "
+                    "from this tool: only a named human can activate a Validated result."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "name": {"type": "string", "description": "Name of an existing Proposed capability."},
+                }, "required": ["name"]},
+            },
+            {
+                "name": "capability_test",
+                "description": (
+                    "Run the real unittest suite in the capability lab, check its tool "
+                    "interface, record the output and SHA-256 of every implementation/test "
+                    "file. Only passing tests reach Validated. State what the tests actually "
+                    "prove; validation is not activation. Human promotion is separate."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "name": {"type": "string", "description": "Name of an existing capability to test."},
+                }, "required": ["name"]},
+            },
+            {
+                "name": "capability_status",
+                "description": (
+                    "Read the recorded status, source/test paths, validation digest, and "
+                    "test evidence for a capability. Active tools appear on the next run "
+                    "after named-human promotion; proposals are not tools."
+                ),
+                "parameters": {"type": "object", "properties": {
+                    "name": {"type": "string"},
+                }, "required": ["name"]},
             },
             {
                 "name": "tool_info",
@@ -607,6 +652,11 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._handlers) + list(self._external_handlers)
 
+    def side_effects(self, name: str) -> bool:
+        """The guardian uses declared effects for built-ins AND promoted tools."""
+        return bool((TOOL_META.get(name) or self._external_meta.get(name) or {})
+                    .get("side_effects", False))
+
     def invoke(self, name: str, arguments: dict[str, Any], ctx: ToolContext | None = None) -> ToolResult:
         ctx = ctx or ToolContext()
         ctx.arguments = dict(arguments or {})
@@ -683,8 +733,21 @@ class ToolRegistry:
                             f"a ToolResult; the contract is violated"),
                     error="contract_violation", category="capability",
                 )
-            self.store.append_event("capability_tool_used", {"tool": name, "ok": result.ok},
-                                    task_id=ctx.task_id)
+            source = str(self._external_meta.get(name, {}).get("source", ""))
+            capability_name = source.split(":", 1)[1] if source.startswith("capability:") else None
+            self.store.append_event("capability_tool_used",
+                                    {"tool": name, "ok": result.ok,
+                                     "capability": capability_name}, task_id=ctx.task_id)
+            registry = (ctx.services or {}).get("capabilities")
+            if result.ok and registry is not None and capability_name:
+                try:
+                    registry.mark_used(capability_name, tool=name, task_id=ctx.task_id)
+                except Exception as exc:
+                    self.store.append_event(
+                        "capability_maintenance_failed",
+                        {"name": capability_name, "tool": name,
+                         "error": f"{type(exc).__name__}: {exc}"}, task_id=ctx.task_id,
+                    )
             return result
         if handler is None:
             result = ToolResult(
@@ -1108,6 +1171,14 @@ class ToolRegistry:
                           data={"id": record.id, "status": record.status})
 
     # -- governance tools -------------------------------------------------
+    def _capability_registry(self, ctx: ToolContext):
+        from .capabilities import CapabilityRegistry
+
+        return (ctx.services or {}).get("capabilities") or CapabilityRegistry(
+            self.store, lab=self.config.paths.capability_lab,
+            promoted=self.config.paths.promoted,
+        )
+
     def _request_capability(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         name = str(args.get("name", "")).strip()
         requirement = str(args.get("requirement", "")).strip()
@@ -1119,25 +1190,87 @@ class ToolRegistry:
                        "without a reuse analysis is not reviewable",
                 error="bad_arguments",
             )
-        from .capabilities import CapabilityRegistry
+        from .capabilities import CapabilityError
 
-        registry = CapabilityRegistry(self.store)
-        record = registry.propose(
-            name=name, requirement=requirement, reuse_analysis=reuse,
-            rationale=str(args.get("rationale") or ""),
-            verification_plan=str(args.get("verification_plan") or ""),
-            reversible=bool(args.get("reversible", True)),
-            task_id=ctx.task_id,
-        )
+        try:
+            record = self._capability_registry(ctx).propose(
+                name=name, requirement=requirement, reuse_analysis=reuse,
+                rationale=str(args.get("rationale") or ""),
+                verification_plan=str(args.get("verification_plan") or ""),
+                reversible=bool(args.get("reversible", True)), task_id=ctx.task_id,
+            )
+        except CapabilityError as exc:
+            return ToolResult(tool="request_capability", ok=False,
+                              output=str(exc), error="capability_error")
         return ToolResult(
             tool="request_capability", ok=True,
             output=(
                 f"proposal recorded: capability {name!r} is now status='proposed'. Nothing was "
-                f"implemented and no permission was granted. To move it forward, write the "
-                f"implementation into {self.config.paths.capability_lab} and run its tests; "
-                f"promotion to 'active' requires a human to run `livium capability promote`."
+                "implemented and no permission was granted. To make it real, use "
+                "capability_scaffold (optional), write_file to author the actual module and "
+                "tests in the lab, then capability_test. Passing tests make it Validated; "
+                "only a named human can promote it to Active."
             ),
             data=record.as_dict(),
+        )
+
+    def _capability_scaffold(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        from .capabilities import CapabilityError
+
+        try:
+            paths = self._capability_registry(ctx).scaffold(name, task_id=ctx.task_id)
+        except CapabilityError as exc:
+            return ToolResult(tool="capability_scaffold", ok=False,
+                              output=str(exc), error="capability_error")
+        return ToolResult(
+            tool="capability_scaffold", ok=True,
+            output=(f"experimental lab created at {paths['dir']}; source: {paths['module']}; "
+                    f"tests: {paths['tests']}. These are placeholders, not a capability. "
+                    "Replace both with real code and assertions via write_file, then use "
+                    "capability_test. Tests cannot validate the scaffold."),
+            data={key: str(value) for key, value in paths.items()},
+        )
+
+    def _capability_test(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        from .capabilities import CapabilityError
+
+        try:
+            result = self._capability_registry(ctx).run_tests(
+                name, timeout=self.config.limits.max_command_seconds, task_id=ctx.task_id,
+            )
+        except CapabilityError as exc:
+            return ToolResult(tool="capability_test", ok=False,
+                              output=str(exc), error="capability_error")
+        detail = _text(result["evidence"], 5500)
+        return ToolResult(
+            tool="capability_test", ok=result["passed"],
+            output=(f"{name}: {result['status']}; exit {result['exit_code']}; "
+                    f"manifest SHA-256 {result.get('manifest_sha256') or 'not validated'}.\n"
+                    f"{detail}\n"
+                    + ("Passing tests bind these files; a named human must still review "
+                       "and promote before any new tool is available."
+                       if result["passed"] else "Fix the implementation or tests and retry.")),
+            data=result,
+            error=None if result["passed"] else "tests_not_validated",
+        )
+
+    def _capability_status(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        name = str(args.get("name", "")).strip()
+        record = self._capability_registry(ctx).get(name)
+        if record is None:
+            return ToolResult(tool="capability_status", ok=False,
+                              output=f"no capability {name!r} is recorded", error="not_found")
+        from .capabilities import manifest_digest
+
+        manifest = record.validated_manifest or {}
+        return ToolResult(
+            tool="capability_status", ok=True, data=record.as_dict(),
+            output=(f"{record.render()}\n"
+                    f"  validated files: {len(manifest)}; "
+                    f"manifest SHA-256: {manifest_digest(manifest) if manifest else 'not validated'}\n"
+                    f"  latest test evidence: {_text(record.evidence or 'none', 2800)}"),
         )
 
     def _discovery_queue(self, ctx: ToolContext):

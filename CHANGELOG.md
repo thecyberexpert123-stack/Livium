@@ -3,6 +3,73 @@
 All notable changes to Agent Livium. Every entry states what was verified and how,
 because a change that was never exercised is not a change that works.
 
+## [0.5.0] — a component Studio and a real extension path
+
+### Studio (Node + React/Vite)
+
+- Replaced the hand-wired `ui/public/app.js` page with React components and Vite
+  (`ui/src/`). The Node server still owns same-origin APIs and starts real Python
+  processes; the Python runtime remains the only agent. Production serves the
+  checked-in `ui/public/` bundle with **one** browser-facing Node server, no Vite
+  process or npm installation required. Vite's dev server is optional and proxies
+  API requests to Node for hot reload.
+- The chat, task list, verification, workspace (upload, browse, download, text and
+  raster preview), Journal and Settings remain live. A Capabilities sheet shows
+  each row, the exact tested/source/installed file hashes, failing or passing
+  test output, the Guardian's current gate, and lab source/tests in the dock.
+  Promotion stays CLI-only: this console has no authentication.
+- **Security fix:** the home browser previously allowed downloading `settings.json`
+  *raw*, bypassing response scrubbing and leaking the API key. Preview, download,
+  overwrite, deletion and recursive removal through that route now refuse the key
+  file, even via a same-inode hard link or a symlinked home; the suite asserts
+  these cases over a real socket. Additional environment variables are write-only
+  from the browser: their names, not their values, are returned. Long values are
+  scrubbed from text even when the variable has an ordinary name. Proxied Python
+  JSON is redacted before its outgoing Content-Length is calculated, including
+  values escaped on the wire; a real-socket regression covers both. This does not
+  protect the files from arbitrary Python with the same OS identity (see §21 of
+  `docs/LIMITATIONS.md`).
+- `ui/public/source-hash.txt` binds the committed bundle to the React sources;
+  tests also fetch the actual hashed assets the Node server serves. React component
+  tests drive the settings form, chat, criteria, task submission, artifact dock,
+  theme and capability review (UI fixtures, not model evidence).
+
+### Capability growth (Python core, schema v5)
+
+- Agent tools now **actually** scaffold, test and inspect capabilities, following
+  `request_capability`. The agent can write a real implementation, helper modules,
+  resources and tests in the lab. A passing unittest run plus a conforming tool
+  interface records SHA-256 for every lab file and reaches **Validated**; a
+  scaffold's placeholder still cannot pass. A read-only `capability review NAME`
+  and `/api/capabilities/NAME/review` show tested vs live bytes without importing
+  unapproved code.
+- Human promotion requires a named operator, a passing Guardian gate and unchanged
+  tested files. It atomically copies the **whole package**, including helpers and
+  resources, under `$LIVIUM_HOME/promoted/NAME/`; a new agent checks DB status and
+  all approved digests **before** import. Unregistered, modified, missing or rolled
+  back code fails closed with a recorded load failure. The first successful use
+  moves Active to Maintained. A named human can deprecate a superseded tool, or
+  rollback a defective one; neither loads on the next run. Blank/whitespace names
+  cannot pass the human-attribution check.
+- Regression tests exercise proposal → scaffold → real source/test writes via
+  the agent's tool calls → validation → human CLI promotion → a new task calling
+  the new tool → deprecation → rollback, plus mutation of implementation/tests/helpers, unsigned
+  files, package-relative imports and resource files. The model replies are
+  explicitly the scripted test double; this does **not** prove model inventiveness,
+  test quality or filesystem isolation.
+- The default promoted directory moved from the repository to the runtime home.
+  Legacy flat modules without recorded manifests are no longer loaded automatically:
+  an explicit human review, re-test and re-promotion is required. See
+  `docs/LIMITATIONS.md` §9 and §21 for migration and the trust boundary.
+
+**Verification:** 368 Python tests; 53 Node/API tests and 5 React component tests;
+all six core demonstrations and M1–M10 rerun with observed outcomes. A1 now uses
+only the configured real client for both probe and task, and a regression asserts
+an unreachable provider leaves the real task blocked. A previous demo incorrectly
+ran the A1 task with the scripted client after a failed real probe; that evidence
+was replaced. A2 and the Studio extension test use a labelled scripted test double;
+provider egress here still fails, so no model-driven capability generation is claimed.
+
 ## [0.4.0] — the Studio
 
 An operator console in Node (`ui/`), with no npm dependencies and no build step. Nothing

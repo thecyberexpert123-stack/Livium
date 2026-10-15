@@ -234,6 +234,21 @@ class ViewerContractTests(LiviumTestCase):
             urllib.request.urlopen(self.base + "/api/nope", timeout=15)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_capability_review_reads_live_lab_hashes_but_cannot_promote(self) -> None:
+        registry = self.state.agent.capabilities
+        registry.propose(name="line_count", requirement="count lines",
+                         reuse_analysis="existing tools cannot count non-blank lines")
+        registry.scaffold("line_count")
+        review = self.get("/api/capabilities/line_count/review")
+        self.assertEqual(review["capability"]["status"], "experimental")
+        self.assertIn("line_count.py", review["lab"]["observed"])
+        self.assertIsNone(review["lab"]["expected"])
+        self.assertFalse(review["eligible_for_human_review"])
+        self.assertFalse(review["guardian_gate"]["ok"])
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.get("/api/capabilities/not_registered/review")
+        self.assertEqual(caught.exception.code, 404)
+
     def test_the_api_does_not_expose_promotion_or_rebaselining(self) -> None:
         """Those are deliberate CLI-only, human-attributed controls."""
 

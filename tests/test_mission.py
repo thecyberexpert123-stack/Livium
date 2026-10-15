@@ -349,10 +349,10 @@ class E_ExperienceAcrossRestart(MissionFixture):
             config = Config.load(); config.ensure_dirs()
             memory_id, action = Memory(Store(config.paths.db)).remember(
                 "capability",
-                "recording counts: call memory_recent first to see what was learned recently "
-                "instead of guessing at keywords",
-                key="memory_recent", confidence=0.9, verification="verified",
-                evidence="observed in an earlier task", tags=["reuse:memory_recent"])
+                "recording counts: call memory_search with the known phrase recording counts "
+                "to find the verified record instead of guessing from the task",
+                key="memory_search", confidence=0.9, verification="verified",
+                evidence="observed in an earlier task", tags=["reuse:memory_search"])
             print(json.dumps({"memory_id": memory_id, "action": action}))
             """
         )
@@ -366,20 +366,20 @@ class E_ExperienceAcrossRestart(MissionFixture):
             from livium.ledger import Ledger
             config = Config.load(); config.ensure_dirs()
             agent = LiviumAgent(config, script=[
-                {"tool_calls": [{"name": "memory_recent", "arguments": {"limit": 5}}]},
+                {"tool_calls": [{"name": "memory_search", "arguments": {"query": "recording counts"}}]},
                 {"tool_calls": [{"name": "finish_task", "arguments": {
                     "summary": "listed recent records", "status": "complete"}}]},
             ])
             agent.start()
             if not agent.guardian.integrity().ok:
                 agent.guardian.record_baseline(approved_by="Test Human", force=True)
-            run = agent.run_task("recall what was learned recently",
+            run = agent.run_task("recall what we learned about recording counts",
                                  [{"kind": "event", "event_type": "tool_call"}])
             row = Ledger(agent.store).rows(limit=1)[0]
             latest = agent.store.one(
                 "SELECT memory_ids, experience_evidence FROM ledger ORDER BY id DESC LIMIT 1")
             print(json.dumps({
-                "exposed_memory_recent": "memory_recent" in agent.tools.specs_names(),
+                "exposed_memory_search": "memory_search" in agent.tools.specs_names(),
                 "influenced": bool(row.experience_influenced),
                 "evidence": json.loads(latest["experience_evidence"]),
                 "memory_ids": json.loads(latest["memory_ids"]),
@@ -390,7 +390,7 @@ class E_ExperienceAcrossRestart(MissionFixture):
         )
         self.assertEqual(second["verification"], "verified",
                          "the criterion is objective and the run satisfied it")
-        self.assertTrue(second["exposed_memory_recent"])
+        self.assertTrue(second["exposed_memory_search"])
         self.assertTrue(second["influenced"],
                         "a record naming the tool that then ran is reuse, not a coincidence")
         self.assertEqual(second["evidence"]["reuse"][0]["memory_id"], first["memory_id"])

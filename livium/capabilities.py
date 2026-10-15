@@ -4,10 +4,10 @@
 The point of this module is that the stages have teeth. "Validated" is only
 reachable by executing the capability's tests and recording their real output;
 "Active" additionally requires a human to run the promote command, because the
-agent has no tool that can promote anything. Promotion copies real files into
-`livium/promoted/`, where the loader picks them up and their tools become
-callable on the next run -- so growth through this path is an actual change in
-what the agent can do, not a record that says it can.
+agent has no tool that can promote anything. Promotion copies the exact tested
+package into `$LIVIUM_HOME/promoted/NAME/`, where the loader checks the approved
+manifest before import and exposes its tools on the next run -- growth is an
+actual change in what the agent can do, not a record that says it can.
 
 Deliberately absent: a registry of capabilities that do not exist. Every row here
 is created either by the agent's proposal tool (status=proposed, no
@@ -20,10 +20,12 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import pathlib
 import re
-import subprocess
+import shutil
 import sys
+import tempfile
 from typing import Any
 
 from .permissions import UNATTRIBUTED_NAMES
@@ -176,6 +178,8 @@ class Capability:
     implementation_ref: str | None = None
     limitations: str | None = None
     version: int = 1
+    validated_manifest: dict[str, str] | None = None
+    promoted_manifest: dict[str, str] | None = None
 
     @property
     def validated(self) -> bool:
@@ -221,13 +225,57 @@ class CapabilityError(RuntimeError):
     pass
 
 
+def file_manifest(directory: pathlib.Path) -> dict[str, str]:
+    """Hash *all* authored lab files, including tests, helpers and data files.
+
+    A digest of only the entrypoint allows tested code to import an untested helper;
+    a digest of only the implementation allows tests to change after validation.
+    Cache files created by Python are excluded, never followed. Symlinks and special
+    files are refused, rather than copied outside the lab during promotion.
+    """
+
+    if directory.is_symlink() or not directory.is_dir():
+        raise CapabilityError(f"capability directory missing or a symlink: {directory}")
+    result: dict[str, str] = {}
+    for child in sorted(directory.rglob("*")):
+        relative = child.relative_to(directory)
+        if "__pycache__" in relative.parts or ".pytest_cache" in relative.parts or child.suffix == ".pyc":
+            continue
+        if child.is_symlink():
+            raise CapabilityError(f"symlink in capability lab is not installable: {child}")
+        if child.is_dir():
+            continue
+        if not child.is_file():
+            raise CapabilityError(f"non-regular capability file: {child}")
+        with child.open("rb") as handle:
+            result[relative.as_posix()] = hashlib.file_digest(handle, "sha256").hexdigest()
+    return result
+
+
+def manifest_digest(files: dict[str, str]) -> str:
+    return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _json_manifest(raw: str | None) -> dict[str, str] | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(value, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+                                           for k, v in value.items()):
+        return None
+    return value
+
+
 class CapabilityRegistry:
     def __init__(self, store: Store, *, repo_root: pathlib.Path | None = None,
                  lab: pathlib.Path | None = None, promoted: pathlib.Path | None = None):
         self.store = store
         self.repo_root = repo_root or pathlib.Path(__file__).resolve().parent.parent
         self.lab = lab or (self.repo_root / ".livium" / "capability-lab")
-        self.promoted_dir = promoted or (self.repo_root / "livium" / "promoted")
+        self.promoted_dir = promoted or (self.repo_root / ".livium" / "promoted")
 
     # -- reads ------------------------------------------------------------
     def get(self, name: str) -> Capability | None:
@@ -239,6 +287,53 @@ class CapabilityRegistry:
             _row_to_capability(row)
             for row in self.store.query("SELECT * FROM capability ORDER BY name")
         ]
+
+    def review(self, name: str) -> dict[str, Any]:
+        """Read-only evidence for a human: tested bytes vs current lab/installation.
+
+        Does not import code or assert test quality. A matching manifest says the
+        files have not changed since the reported tests, not that they are correct.
+        """
+
+        capability = self.get(name)
+        if capability is None:
+            raise CapabilityError(f"unknown capability {name!r}")
+        tested = capability.validated_manifest
+        installed = capability.promoted_manifest
+
+        def observed(directory: pathlib.Path, expected: dict[str, str] | None) -> dict[str, Any]:
+            try:
+                actual = file_manifest(directory) if directory.exists() else None
+                error = None
+            except (CapabilityError, OSError) as exc:
+                actual = None
+                error = str(exc)
+            return {"expected": expected, "expected_sha256": manifest_digest(expected)
+                    if expected else None, "observed": actual,
+                    "observed_sha256": manifest_digest(actual) if actual else None,
+                    "unchanged": actual == expected if expected is not None else False,
+                    "error": error}
+
+        lab = observed(self.lab / name, tested)
+        promoted = observed(self.promoted_dir / name, installed)
+        return {
+            "capability": capability.as_dict(), "lab": lab, "promoted": promoted,
+            "eligible_for_human_review": capability.status == "validated" and lab["unchanged"],
+            "note": "A passing test and matching hash prove only that these exact files "
+                    "passed those tests. A named human must review what they test and "
+                    "the Guardian must permit promotion; arbitrary Python is not sandboxed.",
+        }
+
+    def approved_modules(self) -> dict[str, dict[str, str]]:
+        """The DB's active, evidence-bound installation allowlist for the loader.
+
+        A file dropped in promoted/ or a legacy row without a recorded manifest is
+        not authority to execute code. The loader compares the actual files against
+        these recorded digests before it imports anything.
+        """
+
+        return {c.name: c.promoted_manifest for c in self.all()
+                if c.status in ("active", "maintained") and c.promoted_manifest}
 
     def describe_for_context(self, limit: int = 8) -> list[str]:
         return [
@@ -258,9 +353,22 @@ class CapabilityRegistry:
         """
 
         capability = self.get(name)
-        if capability is None or not capability.implementation:
+        if capability is None or capability.status not in ("active", "maintained"):
             return None
-        path = pathlib.Path(capability.implementation)
+        path = pathlib.Path(capability.implementation or "")
+        if not capability.promoted_manifest or path.parent != self.promoted_dir / name:
+            self.store.append_event(
+                "capability_metadata_refresh_failed",
+                {"name": name, "reason": "no evidence-bound promoted package is recorded"},
+            )
+            return None
+        try:
+            if file_manifest(path.parent) != capability.promoted_manifest:
+                raise CapabilityError("the promoted files no longer match the approved manifest")
+        except CapabilityError as exc:
+            self.store.append_event("capability_metadata_refresh_failed",
+                                    {"name": name, "reason": str(exc)})
+            return None
         if not path.exists():
             self.store.append_event(
                 "capability_metadata_refresh_failed",
@@ -389,7 +497,11 @@ class CapabilityRegistry:
                 "verification=excluded.verification, description=excluded.description, "
                 "dependencies=excluded.dependencies, "
                 "required_permissions=excluded.required_permissions, "
-                "limitations=excluded.limitations, updated_at=excluded.updated_at",
+                "limitations=excluded.limitations, evidence=excluded.evidence, "
+                "implementation=NULL, tests=NULL, tools='[]', "
+                "validated_manifest=NULL, promoted_manifest=NULL, "
+                "promoted_at=NULL, promoted_by=NULL, version=capability.version+1, "
+                "updated_at=excluded.updated_at",
                 (name, requirement, rationale, reuse_analysis,
                  f"plan: {verification_plan}" if verification_plan else None,
                  f"reversible={reversible}", now(), now(), description or None,
@@ -405,7 +517,7 @@ class CapabilityRegistry:
         assert capability is not None
         return capability
 
-    def scaffold(self, name: str) -> dict[str, pathlib.Path]:
+    def scaffold(self, name: str, *, task_id: str | None = None) -> dict[str, pathlib.Path]:
         """Create the lab directory with an implementation and test skeleton.
 
         The skeleton is scaffolding for *this* capability, which the agent then
@@ -416,10 +528,18 @@ class CapabilityRegistry:
         capability = self.get(name)
         if capability is None:
             raise CapabilityError(f"unknown capability {name!r}; propose it first")
+        if capability.status not in ("proposed", "experimental"):
+            raise CapabilityError(f"cannot scaffold {name!r} while it is {capability.status!r}")
         directory = self.lab / name
+        if directory.is_symlink():
+            raise CapabilityError(f"lab directory is a symlink: {directory}")
         directory.mkdir(parents=True, exist_ok=True)
         module_path = directory / f"{name}.py"
         test_path = directory / f"test_{name}.py"
+        init_path = directory / "__init__.py"
+        for candidate in (module_path, test_path, init_path):
+            if candidate.is_symlink() or (candidate.exists() and not candidate.is_file()):
+                raise CapabilityError(f"scaffold path is not a regular lab file: {candidate}")
         if not module_path.exists():
             module_path.write_text(
                 CAPABILITY_TEMPLATE.format(name=name, requirement=capability.requirement),
@@ -430,20 +550,24 @@ class CapabilityRegistry:
                 TEST_TEMPLATE.replace("MODULE", name).replace("MODULE_FILE", f"{name}.py"),
                 encoding="utf-8",
             )
-        (directory / "__init__.py").write_text("", encoding="utf-8")
+        init_path.touch(exist_ok=True)
         self._set_status(name, "experimental", implementation=str(module_path),
-                         tests=str(test_path), lines=_count_lines(module_path))
+                         tests=str(test_path), lines=_count_lines(module_path),
+                         validated_manifest="")
         self.store.append_event(
-            "capability_scaffolded", {"name": name, "dir": str(directory)}
+            "capability_scaffolded", {"name": name, "dir": str(directory)}, task_id=task_id
         )
         return {"module": module_path, "tests": test_path, "dir": directory}
 
-    def run_tests(self, name: str, *, timeout: float = 120.0) -> dict[str, Any]:
-        """Execute the capability's tests for real and record the raw outcome.
+    def run_tests(self, name: str, *, timeout: float = 120.0,
+                  task_id: str | None = None) -> dict[str, Any]:
+        """Execute the candidate's real tests, then bind evidence to all its files.
 
-        Uses the same isolation mechanism as the agent's own command execution, so
-        a capability under test cannot reach the network on hosts that support
-        network namespaces.
+        A passing test suite is evidence for the exact files it exercised, *not* a
+        promise about arbitrary later changes. It makes the candidate eligible for a
+        human review; the reviewer still has to decide whether the assertions cover
+        the requirement. Tests run under Runner's actual isolation report; the code
+        does not call this a filesystem sandbox where none exists.
         """
 
         from .execution import Runner
@@ -451,78 +575,128 @@ class CapabilityRegistry:
         capability = self.get(name)
         if capability is None:
             raise CapabilityError(f"unknown capability {name!r}")
+        if capability.status not in ("proposed", "experimental", "validated"):
+            raise CapabilityError(f"cannot test {name!r} while it is {capability.status!r}")
         directory = self.lab / name
-        if not directory.exists():
+        if not directory.is_dir() or directory.is_symlink():
             raise CapabilityError(
-                f"{directory} does not exist: there is nothing to test. Scaffold and implement "
-                f"the capability first."
+                f"{directory} does not exist (or is a symlink): there is nothing to test. "
+                "Scaffold or implement the capability first."
             )
         test_files = sorted(directory.glob("test_*.py"))
         if not test_files:
             raise CapabilityError(f"no test_*.py in {directory}: nothing would be verified")
-
         module_path = directory / f"{name}.py"
-        markers = placeholder_markers(module_path)
-        if markers:
-            detail = (
-                f"the implementation at {module_path} still contains scaffold placeholders "
-                f"({', '.join(sorted(set(markers)))}). Tests cannot validate an unimplemented "
-                f"module, so the status stays 'experimental' regardless of the test result. "
-                f"Implement the capability and replace the placeholder test."
-            )
+        if not module_path.is_file() or module_path.is_symlink():
+            raise CapabilityError(f"implementation missing or a symlink: {module_path}")
+        if capability.status == "proposed":
+            # Writing real code directly to the lab need not require a placeholder
+            # scaffold. It still passes through Experimental before validation.
+            self._set_status(name, "experimental", implementation=str(module_path),
+                             tests=", ".join(str(p) for p in test_files))
+
+        def refused(detail: str) -> dict[str, Any]:
             self._set_status(
-                name, "experimental",
-                tests=", ".join(str(p) for p in test_files), lines=_count_lines(module_path),
-                verification="NOT validated: module still contains scaffold placeholders",
-                evidence=detail,
+                name, "experimental", implementation=str(module_path),
+                tests=", ".join(str(p) for p in test_files),
+                lines=_count_lines(module_path),
+                verification="NOT validated: " + detail[:200], evidence=detail,
+                validated_manifest="",
             )
             self.store.append_event(
-                "capability_test_refused", {"name": name, "reason": "placeholders remain"}
+                "capability_test_refused", {"name": name, "reason": detail[:500]},
+                task_id=task_id,
             )
-            return {
-                "name": name, "exit_code": None, "status": "experimental", "passed": False,
-                "duration_ms": 0, "stdout": "", "stderr": detail, "evidence": detail,
-            }
+            return {"name": name, "exit_code": None, "status": "experimental",
+                    "passed": False, "duration_ms": 0, "stdout": "", "stderr": detail,
+                    "evidence": detail, "manifest_sha256": None}
+
+        try:
+            before = file_manifest(directory)
+        except CapabilityError as exc:
+            return refused(str(exc))
+        markers = placeholder_markers(module_path)
+        if markers:
+            return refused(
+                f"the implementation at {module_path} still contains scaffold placeholders "
+                f"({', '.join(sorted(set(markers)))}). Tests cannot validate an "
+                "unimplemented module. Replace the placeholders and test actual behaviour."
+            )
 
         runner = Runner(max_seconds=timeout, max_output_bytes=40_000)
         argv = ["python3", "-m", "unittest", "discover", "-s", str(directory),
                 "-p", "test_*.py", "-v"]
         result = runner.run(argv, cwd=directory)
-        lines = _count_lines(directory / f"{name}.py")
-        passed = result.exit_code == 0
+        try:
+            after = file_manifest(directory)
+        except CapabilityError as exc:
+            return refused(f"tests altered the lab into an unsafe state: {exc}")
+        # A test may create a non-executable fixture beside itself. Record that
+        # fixture in the manifest reviewed for promotion. But an existing file
+        # altered during testing, or a NEW executable module, makes the result
+        # ambiguous: the tested code and the reviewed code may differ.
+        new_files = sorted(after.keys() - before.keys())
+        changed = any(after.get(file) != digest for file, digest in before.items()) or any(
+            file.endswith((".py", ".pyi", ".so", ".pyd")) for file in new_files
+        )
+        passed = result.exit_code == 0 and not changed
+        interface_detail = "not checked (tests failed)"
+        declaration: dict[str, Any] = {}
+        if passed:
+            passed, interface_detail, declaration = inspect_capability_module(
+                module_path, expected_name=name
+            )
+        manifest = after if passed else None
         evidence = (
             f"argv={argv}\n"
             f"exit_code={result.exit_code} duration_ms={result.duration_ms} "
-            f"network_isolated={result.network_isolated}\n"
+            f"network_isolated={result.network_isolated} "
+            f"filesystem_confined={runner.isolation.filesystem_confined}\n"
+            f"lab_changed_during_test={changed} created_files={new_files} interface={interface_detail}\n"
+            f"manifest_sha256={manifest_digest(manifest) if manifest is not None else 'not validated'}\n"
             f"--- stderr (test runner output) ---\n{result.stderr[-6000:]}"
         )
         status = "validated" if passed else "experimental"
         self._set_status(
-            name, status,
+            name, status, implementation=str(module_path),
             tests=", ".join(str(p) for p in test_files),
-            lines=lines,
-            verification=("tests executed and passed" if passed
-                          else "tests executed and FAILED"),
+            lines=_count_lines(module_path),
+            verification=("tests passed; source and test digests recorded" if passed
+                          else "tests or interface FAILED; not validated"),
             evidence=evidence,
+            validated_manifest=json.dumps(manifest, sort_keys=True) if manifest is not None else "",
+            description=declaration.get("description") or capability.description,
+            tools=json.dumps(declaration.get("tools") or []) if passed else "[]",
+            required_permissions=json.dumps(declaration.get("permissions") or []) if passed else "[]",
+            dependencies=json.dumps(declaration.get("dependencies") or []) if passed else "[]",
         )
         self.store.append_event(
             "capability_tested",
             {"name": name, "exit_code": result.exit_code, "status": status,
-             "duration_ms": result.duration_ms, "network_isolated": result.network_isolated},
+             "duration_ms": result.duration_ms,
+             "network_isolated": result.network_isolated,
+             "filesystem_confined": runner.isolation.filesystem_confined,
+             "manifest_sha256": manifest_digest(manifest) if manifest is not None else None,
+             "lab_changed_during_test": changed, "interface": interface_detail},
+            task_id=task_id,
         )
         return {
             "name": name, "exit_code": result.exit_code, "status": status,
             "passed": passed, "duration_ms": result.duration_ms,
             "stdout": result.stdout[-4000:], "stderr": result.stderr[-8000:],
             "evidence": evidence,
+            "manifest_sha256": manifest_digest(manifest) if manifest is not None else None,
+            "files": manifest if manifest is not None else None,
         }
 
     def promote(self, name: str, *, approved_by: str, guardian_check) -> Capability:
-        """Copy a validated capability into the package so it actually loads.
+        """Human promotion of the exact implementation *and tests* that passed.
 
-        Requires: human attribution, status 'validated', and a passing guardian
-        integrity check. Promotion is the only path that makes a new capability
-        callable, and the agent cannot call it.
+        The whole lab package is installed, not just its entrypoint: relative
+        imports and non-Python resources therefore work after promotion. The
+        installed snapshot is hashed before it can become Active. This gate checks
+        attributed review and evidence, not a model's confidence; it is NOT an OS
+        security boundary against arbitrary Python running as the same user.
         """
 
         if not approved_by or approved_by.strip().lower() in UNATTRIBUTED_NAMES:
@@ -538,35 +712,64 @@ class CapabilityRegistry:
                 f"capability {name!r} is {capability.status!r}, not 'validated'. Run its tests "
                 f"first and make them pass; passing tests are a precondition, not a formality."
             )
+        if not capability.validated_manifest:
+            raise CapabilityError(
+                "the previous test run did not record file digests; re-run capability test "
+                "before promotion, so the reviewed code is the tested code"
+            )
         check = guardian_check()
         if not check.get("ok"):
             raise CapabilityError(
                 f"guardian integrity check failed, so promotion is blocked: {check.get('detail')}"
             )
-        source = self.lab / name / f"{name}.py"
-        if not source.exists():
-            raise CapabilityError(f"lab implementation missing: {source}")
+        source_dir = self.lab / name
+        source = source_dir / f"{name}.py"
+        current = file_manifest(source_dir)
+        if current != capability.validated_manifest:
+            raise CapabilityError(
+                "the lab changed since its tests passed; re-run capability test and review "
+                "the new manifest before promoting it"
+            )
         changed, detail, declaration = inspect_capability_module(source, expected_name=name)
         if not changed:
             raise CapabilityError(f"capability module failed validation: {detail}")
+        # The import-time probe can itself change lab contents. Check again.
+        if file_manifest(source_dir) != current:
+            raise CapabilityError("the lab changed during the interface check; re-test it")
 
+        if self.promoted_dir.is_symlink():
+            raise CapabilityError("the promoted directory is a symlink; promotion refused")
         self.promoted_dir.mkdir(parents=True, exist_ok=True)
-        destination = self.promoted_dir / f"{name}.py"
-        destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        digest = hashlib.sha256(destination.read_bytes()).hexdigest()
-
-        # Record the interface the module actually declares, not one typed into the
-        # proposal: the registry's metadata has to describe code that exists.
+        destination_dir = self.promoted_dir / name
+        flat_legacy = self.promoted_dir / f"{name}.py"
+        if destination_dir.exists() or destination_dir.is_symlink() or flat_legacy.exists():
+            raise CapabilityError(
+                f"a promoted copy of {name!r} already exists; rollback and inspect it first"
+            )
+        # Copy into a temporary sibling; an incomplete package cannot be loaded.
+        with tempfile.TemporaryDirectory(prefix=".livium-promote-", dir=self.promoted_dir) as tmp:
+            staged = pathlib.Path(tmp) / name
+            shutil.copytree(source_dir, staged, ignore=shutil.ignore_patterns(
+                "__pycache__", ".pytest_cache", "*.pyc"))
+            if file_manifest(staged) != current:
+                raise CapabilityError(
+                    "the copied package differs from the tested files; promotion refused"
+                )
+            os.replace(staged, destination_dir)
+        digest = manifest_digest(current)
+        destination = destination_dir / f"{name}.py"
+        # Record what the module actually declares, not a speculative proposal.
         tools = [t for t in (declaration.get("tools") or []) if isinstance(t, dict)]
         self._set_status(
             name, "active", implementation=str(destination), promoted_by=approved_by.strip(),
-            verification=(capability.verification or "") + f"; promoted after SHA-256 {digest[:16]}",
+            verification=(capability.verification or "") + f"; promoted manifest SHA-256 {digest}",
             description=declaration.get("description") or capability.description,
             tools=json.dumps(tools),
             dependencies=json.dumps(list(declaration.get("dependencies") or [])),
             required_permissions=json.dumps(list(declaration.get("permissions") or [])),
             limitations=declaration.get("limitations") or capability.limitations,
             implementation_ref=str(destination),
+            promoted_manifest=json.dumps(current, sort_keys=True),
         )
         with self.store.transaction() as conn:
             conn.execute(
@@ -576,30 +779,82 @@ class CapabilityRegistry:
         self.store.append_event(
             "capability_promoted",
             {"name": name, "approved_by": approved_by.strip(), "path": str(destination),
-             "sha256": digest},
+             "sha256": digest, "files": current},
         )
         promoted = self.get(name)
         assert promoted is not None
         return promoted
 
     def rollback(self, name: str, *, reason: str) -> Capability:
-        """Withdraw an active capability: remove the promoted file and record why."""
+        """Withdraw an approved package; the loader also rejects its DB status."""
 
         capability = self.get(name)
         if capability is None:
             raise CapabilityError(f"unknown capability {name!r}")
-        target = self.promoted_dir / f"{name}.py"
+        target = self.promoted_dir / name
+        flat_legacy = self.promoted_dir / f"{name}.py"
         removed = False
-        if target.exists():
+        if target.is_symlink():
             target.unlink()
             removed = True
-        self._set_status(name, "rollback", verification=f"rolled back: {reason}")
+        elif target.is_dir():
+            shutil.rmtree(target)
+            removed = True
+        if flat_legacy.exists():
+            flat_legacy.unlink()
+            removed = True
+        self._set_status(name, "rollback", verification=f"rolled back: {reason}",
+                         promoted_manifest="")
         self.store.append_event(
             "capability_rollback", {"name": name, "reason": reason, "file_removed": removed}
         )
         rolled = self.get(name)
         assert rolled is not None
         return rolled
+
+    def deprecate(self, name: str, *, approved_by: str, reason: str) -> Capability:
+        """A named human retires an Active/Maintained tool without erasing history."""
+
+        if not approved_by or approved_by.strip().lower() in UNATTRIBUTED_NAMES:
+            raise CapabilityError("deprecation requires a named human, not the agent")
+        if not reason.strip():
+            raise CapabilityError("deprecation needs a reason")
+        capability = self.get(name)
+        if capability is None or capability.status not in ("active", "maintained"):
+            raise CapabilityError(f"{name!r} is not an active/maintained capability")
+        target = self.promoted_dir / name
+        legacy = self.promoted_dir / f"{name}.py"
+        if target.is_symlink():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
+        if legacy.exists():
+            legacy.unlink()
+        self._set_status(name, "deprecated", verification=f"deprecated by {approved_by}: {reason}",
+                         promoted_manifest="")
+        self.store.append_event(
+            "capability_deprecated", {"name": name, "by": approved_by.strip(),
+                                      "reason": reason, "former_status": capability.status,
+                                      "former_manifest_sha256": manifest_digest(
+                                          capability.promoted_manifest or {})},
+        )
+        record = self.get(name)
+        assert record is not None
+        return record
+
+    def mark_used(self, name: str, *, tool: str, task_id: str | None = None) -> None:
+        """The first successful call makes an Active capability Maintained."""
+
+        capability = self.get(name)
+        if capability is None or capability.status not in ("active", "maintained"):
+            raise CapabilityError(f"{name!r} is not an active capability")
+        if capability.status == "active":
+            self._set_status(name, "maintained")
+            self.store.append_event(
+                "capability_maintained", {"name": name, "tool": tool,
+                                          "reason": "first successful invocation"},
+                task_id=task_id,
+            )
 
     def reject(self, name: str, *, reason: str) -> Capability:
         capability = self.get(name)
@@ -676,14 +931,18 @@ def _probe_capability_module(path: pathlib.Path, *, expected_name: str | None = 
                             ) -> tuple[bool, str, dict[str, Any]]:
     """Check a candidate module really conforms to the capability contract.
 
-    Imported in a subprocess so that a malformed module cannot take down the
-    promoting process, and so import-time side effects are contained.
+    Imported through Runner with a scrubbed environment, resource limits and the
+    network boundary the host actually supports. It is *not* filesystem confined:
+    imported Python still has this user's filesystem privileges. The result is
+    only an interface probe, never a safety certification.
     """
 
     probe = (
         "import importlib.util, json, sys\n"
-        "spec = importlib.util.spec_from_file_location('candidate', sys.argv[1])\n"
+        "spec = importlib.util.spec_from_file_location('candidate', sys.argv[1], "
+        "submodule_search_locations=[str(__import__('pathlib').Path(sys.argv[1]).parent)])\n"
         "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['candidate'] = module\n"
         "spec.loader.exec_module(module)\n"
         "cap = getattr(module, 'CAPABILITY', None) or {}\n"
         "handler = getattr(module, 'handle', None)\n"
@@ -703,23 +962,25 @@ def _probe_capability_module(path: pathlib.Path, *, expected_name: str | None = 
         "                                 for t in tools if isinstance(t, dict)]},\n"
         "       'has_requirement': bool(cap.get('requirement')),\n"
         "       'has_description': bool(cap.get('description')),\n"
-        "       'descriptions': all(bool(t.get('description')) for t in tools)}\n"
+        "       'schemas': bool(tools) and all(isinstance(t, dict) and "
+        "isinstance(t.get('name'), str) and bool(t.get('description')) and "
+        "isinstance(t.get('parameters'), dict) and "
+        "t['parameters'].get('type') == 'object' for t in tools)}\n"
         "print(json.dumps(out))\n"
     )
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-c", probe, str(path)],
-            capture_output=True, timeout=60, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"could not import candidate: {type(exc).__name__}: {exc}", {}
-    if completed.returncode != 0:
+    from .execution import Runner
+
+    runner = Runner(max_seconds=15, max_output_bytes=150_000)
+    completed = runner.run([sys.executable, "-c", probe, str(path)],
+                           cwd=path.parent, timeout=15)
+    if completed.exit_code != 0:
         return False, (
-            f"candidate raised while importing: "
-            f"{completed.stderr.decode(errors='replace')[-1500:]}"
+            f"candidate raised while importing (exit {completed.exit_code}, "
+            f"network_isolated={completed.network_isolated}): "
+            f"{completed.stderr[-1500:]}"
         ), {}
     try:
-        info = json.loads(completed.stdout.decode().strip().splitlines()[-1])
+        info = json.loads(completed.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
         return False, f"candidate import produced no parseable report: {completed.stdout[:300]!r}", {}
 
@@ -728,8 +989,8 @@ def _probe_capability_module(path: pathlib.Path, *, expected_name: str | None = 
         return False, "module must define both CAPABILITY and a callable handle()", declaration
     if not info["has_requirement"]:
         return False, "CAPABILITY must state the requirement it addresses", declaration
-    if not info["descriptions"]:
-        return False, "every declared tool needs a description the model can act on", declaration
+    if not info["schemas"]:
+        return False, "declare at least one tool with a name, description and object schema", declaration
     if expected_name and info["name"] != expected_name:
         return False, (f"CAPABILITY name {info['name']!r} does not match {expected_name!r}",
                        declaration)
@@ -781,4 +1042,8 @@ def _row_to_capability(row) -> Capability:
         implementation_ref=row["implementation_ref"] if "implementation_ref" in keys else None,
         limitations=row["limitations"] if "limitations" in keys else None,
         version=row["version"] if "version" in keys and row["version"] is not None else 1,
+        validated_manifest=_json_manifest(row["validated_manifest"])
+        if "validated_manifest" in keys else None,
+        promoted_manifest=_json_manifest(row["promoted_manifest"])
+        if "promoted_manifest" in keys else None,
     )

@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,7 @@ import { writeSettings } from "../lib/settings.mjs";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const KEY = "sk-live-abcdefghijklmnopqrstuvwxyz012345";
+const EXTRA_SECRET = "private-credential-with-no-provider-pattern";
 const WRITE = { "X-Livium-Studio": "1", "Content-Type": "application/json" };
 process.env.LIVIUM_STUDIO_NO_BACKEND = "1";
 
@@ -49,12 +51,15 @@ test("the state the UI polls carries no key material", { skip: missing }, async 
   await withStudio(t, async ({ base, home }) => {
     await fetch(`${base}/studio/api/settings`, {
       method: "POST", headers: WRITE,
-      body: JSON.stringify({ api_key: KEY, provider: "anthropic", restart: false }),
+      body: JSON.stringify({ api_key: KEY, provider: "anthropic", restart: false,
+                             extra: { PRIVATE_DEPLOYMENT_CREDENTIAL: EXTRA_SECRET } }),
     });
     const state = await (await fetch(`${base}/studio/api/state`)).json();
     const text = JSON.stringify(state);
     assert.equal(text.includes(KEY), false, "the key is in the state payload");
     assert.equal(text.includes(KEY.slice(0, 10)), false, "a prefix of the key is in the state payload");
+    assert.equal(text.includes(EXTRA_SECRET), false, "a custom extra credential is in the state payload");
+    assert.equal(state.settings.extra.PRIVATE_DEPLOYMENT_CREDENTIAL, null);
     assert.equal(state.settings.api_key_set, true);
     assert.equal(state.settings.api_key_length, KEY.length);
     assert.equal(state.studio.home, await fs.realpath(home));
@@ -96,6 +101,59 @@ test("saving the key writes it 0600 and never echoes it", { skip: missing }, asy
     assert.equal(stored.api_key, KEY, "the key must be stored, or the runtime cannot use it");
     assert.equal((await fs.stat(path.join(home, "settings.json"))).mode & 0o777, 0o600);
   });
+});
+
+test("home browsing never returns the key file, even as a raw download", { skip: missing }, async (t) => {
+  await withStudio(t, async ({ base, home }) => {
+    await writeSettings(home, { api_key: KEY });
+    for (const suffix of ["", "&download=1"]) {
+      const response = await fetch(`${base}/studio/api/workspace/file?root=home&path=settings.json${suffix}`);
+      assert.equal(response.status, 400);
+      assert.equal((await response.text()).includes(KEY), false);
+    }
+    const upload = await fetch(`${base}/studio/api/workspace/file?root=home`, {
+      method: "POST", headers: { "X-Livium-Studio": "1", "X-Livium-Path": "settings.json" },
+      body: Buffer.from("overwrite attempt"),
+    });
+    assert.equal(upload.status, 400);
+    for (const location of ["settings.json", ""]) {
+      const response = await fetch(`${base}/studio/api/workspace/entry?root=home&path=${location}&recursive=1`, {
+        method: "DELETE", headers: { "X-Livium-Studio": "1" },
+      });
+      assert.equal(response.status, 400);
+    }
+    // A hard link is another name for the same inode: the path is different but
+    // returning its bytes would still expose the key.
+    await fs.link(path.join(home, "settings.json"), path.join(home, "workspace", "alias.json"));
+    for (const suffix of ["", "&download=1"]) {
+      const response = await fetch(`${base}/studio/api/workspace/file?root=workspace&path=alias.json${suffix}`);
+      assert.equal(response.status, 400);
+      assert.equal((await response.text()).includes(KEY), false);
+    }
+    const hardlinkUpload = await fetch(`${base}/studio/api/workspace/file?root=workspace`, {
+      method: "POST", headers: { "X-Livium-Studio": "1", "X-Livium-Path": "alias.json" },
+      body: Buffer.from("overwrite attempt"),
+    });
+    assert.equal(hardlinkUpload.status, 400);
+    assert.equal(JSON.parse(await fs.readFile(path.join(home, "settings.json"), "utf8")).api_key,
+                 KEY);
+  });
+});
+
+test("a symlinked --home is canonicalised before protecting settings.json", { skip: missing }, async (t) => {
+  const real = await fs.mkdtemp(path.join(os.tmpdir(), "livium-studio-real-"));
+  const alias = `${real}-alias`;
+  await fs.symlink(real, alias);
+  t.after(async () => { await fs.unlink(alias); });
+  await writeSettings(real, { api_key: KEY });
+  const studio = await createStudio({ home: alias, port: 0, host: "127.0.0.1", python });
+  const address = await studio.listen();
+  t.after(async () => { await studio.close(); });
+  const base = `http://127.0.0.1:${address.port}`;
+  assert.equal(studio.studio.home, real);
+  const raw = await fetch(`${base}/studio/api/workspace/file?root=home&path=settings.json&download=1`);
+  assert.equal(raw.status, 400);
+  assert.equal((await raw.text()).includes(KEY), false);
 });
 
 test("an upload lands in the workspace and comes back byte-identical", { skip: missing }, async (t) => {
@@ -198,14 +256,20 @@ test("the page and its assets are served from the Studio itself", { skip: missin
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-type"), /text\/html/);
     const html = await page.text();
-    assert.match(html, /\/static\/app\.js/);
-    assert.match(html, /\/static\/styles\.css/);
-    assert.match(html, /Settings/);
-
-    const script = await fetch(`${base}/static/app.js`);
-    assert.equal(script.status, 200);
-    assert.match(script.headers.get("content-type"), /javascript/);
-    assert.match(await script.text(), /studio\/api\/state/);
+    assert.match(html, /id="root"/);
+    const assets = [...html.matchAll(/(?:src|href)="(\/static\/assets\/[^" ]+\.(?:js|css))"/g)]
+      .map(match => match[1]);
+    assert.equal(assets.length, 2, "Vite's production build must reference JS and CSS");
+    for (const asset of assets) {
+      const response = await fetch(base + asset);
+      assert.equal(response.status, 200, `built asset ${asset} is a 404`);
+      assert.match(response.headers.get("content-type"), asset.endsWith(".css") ? /text\/css/ : /javascript/);
+      if (asset.endsWith(".js")) {
+        const script = await response.text();
+        assert.match(script, /studio\/api\/state/);
+        assert.match(script, /Capabilities/);
+      }
+    }
 
     const nowhere = await fetch(`${base}/static/nope.js`);
     assert.equal(nowhere.status, 404);
@@ -354,6 +418,47 @@ test("the transcript the page renders is read back from a real run", { skip: mis
   }, { script: SCRIPT, files: { "notes.txt": "bolts: 12\nnuts: 30\n" } });
 });
 
+test("proxied JSON redacts ordinary and escaped credentials with correct framing", {
+  skip: missing, timeout: 120000,
+}, async (t) => {
+  await withRuntime(t, async ({ base }) => {
+    const escapedKey = 'sk-live-a"b\\cdefghijklmnopqrst';
+    const saved = await fetch(`${base}/studio/api/settings`, {
+      method: "POST", headers: WRITE,
+      body: JSON.stringify({ api_key: escapedKey, extra: { CUSTOM_OPTION: EXTRA_SECRET },
+                             restart: false }),
+    });
+    assert.equal(saved.status, 200);
+    const response = await fetch(`${base}/studio/api/chat`, {
+      method: "POST", headers: WRITE,
+      body: JSON.stringify({ objective: `Summarise ${escapedKey} and ${EXTRA_SECRET}`,
+                             criteria: [{ kind: "event", event_type: "tool_call" }] }),
+    });
+    assert.equal(response.status, 202);
+    const started = (await response.json()).run;
+    const deadline = Date.now() + 30000;
+    let run = started;
+    while (run.running) {
+      if (Date.now() > deadline) throw new Error(`run did not finish: ${run.log_tail}`);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      run = (await (await fetch(`${base}/studio/api/runs/${run.id}`)).json()).run;
+    }
+    assert.equal(run.exit_code, 0, run.log_tail);
+    const proxied = await fetch(`${base}/api/tasks?limit=10`);
+    const text = await proxied.text();
+    assert.equal(proxied.status, 200);
+    assert.equal(Number(proxied.headers.get("content-length")), Buffer.byteLength(text),
+                 "redaction must remeasure the outgoing response, not the incoming one");
+    assert.equal(text.includes(escapedKey), false);
+    assert.equal(text.includes(EXTRA_SECRET), false);
+    const task = JSON.parse(text).tasks.find(item => item.id === started.task_id);
+    assert.ok(task, "the proxied task list is still valid JSON");
+    assert.match(task.objective, /redacted/);
+  }, { script: [{ tool_calls: [{ name: "finish_task", arguments: {
+    summary: "synthetic redaction test completed", status: "complete",
+  } }] }] });
+});
+
 test("an empty objective is refused before anything is spawned", { skip: missing }, async (t) => {
   await withStudio(t, async ({ base }) => {
     const response = await fetch(`${base}/studio/api/chat`, {
@@ -364,4 +469,137 @@ test("an empty objective is refused before anything is spawned", { skip: missing
     const runs = await (await fetch(`${base}/studio/api/runs`)).json();
     assert.deepEqual(runs.runs, []);
   });
+});
+
+// This is not a test of model inventiveness: the scripted double supplies the tool
+// calls. All files, tests, digests, CLI decisions, imports and invocations are real.
+// It proves a browser-started task can develop and validate a general tool, that
+// the read-only review is honest, and that a separate human CLI step makes it
+// available on a later run (never in the same run before promotion).
+test("Studio → agent lab → tests → review → human CLI → new usable tool", {
+  skip: missing, timeout: 120000,
+}, async (t) => {
+  const module = `from livium.tools import ToolResult
+CAPABILITY = {
+  "name": "text_upper", "requirement": "uppercase text without a shell",
+  "description": "Return the upper-case form of text",
+  "tools": [{"name": "text_uppercase", "description": "Uppercase the supplied text",
+    "parameters": {"type": "object", "properties": {"text": {"type": "string"}},
+                   "required": ["text"]}}],
+}
+def handle(tool_name, args, ctx):
+    return ToolResult(tool=tool_name, ok=True, output=str(args.get("text", "")).upper())
+`;
+  const tests = `import unittest
+import text_upper
+class ActualBehaviour(unittest.TestCase):
+    def test_uppercase_output(self):
+        result = text_upper.handle("text_uppercase", {"text": "hello 42"}, None)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.output, "HELLO 42")
+    def test_empty_text(self):
+        self.assertEqual(text_upper.handle("text_uppercase", {"text": ""}, None).output, "")
+`;
+  const finish = { tool_calls: [{ name: "finish_task", arguments: {
+    summary: "validated text_upper; waiting for a named human to promote it",
+    status: "complete",
+  } }] };
+  await withRuntime(t, async ({ base, home }) => {
+    const lab = path.join(home, "capability-lab", "text_upper");
+    await fs.writeFile(path.join(home, "script.json"), JSON.stringify([
+      { tool_calls: [{ name: "request_capability", arguments: {
+        name: "text_upper", requirement: "uppercase text without a shell",
+        reuse_analysis: "No registered tool transforms supplied text into uppercase",
+        verification_plan: "assert output for real input and empty input",
+      } }] },
+      { tool_calls: [{ name: "capability_scaffold", arguments: { name: "text_upper" } }] },
+      { tool_calls: [{ name: "write_file", arguments: {
+        path: path.join(lab, "text_upper.py"), content: module, purpose: "the real implementation",
+      } }] },
+      { tool_calls: [{ name: "write_file", arguments: {
+        path: path.join(lab, "test_text_upper.py"), content: tests, purpose: "real assertions",
+      } }] },
+      { tool_calls: [{ name: "capability_test", arguments: { name: "text_upper" } }] },
+      finish,
+    ]));
+
+    async function runTask(objective, eventType) {
+      const response = await fetch(`${base}/studio/api/chat`, {
+        method: "POST", headers: WRITE,
+        body: JSON.stringify({ objective, criteria: [{ kind: "event", event_type: eventType }] }),
+      });
+      if (response.status !== 202) assert.fail(`start failed: ${await response.text()}`);
+      const started = await response.json();
+      const deadline = Date.now() + 90000;
+      let current = started.run;
+      while (current.running) {
+        if (Date.now() > deadline) throw new Error(`the run did not finish: ${current.log_tail}`);
+        await new Promise(resolve => setTimeout(resolve, 150));
+        current = (await (await fetch(`${base}/studio/api/runs/${current.id}`)).json()).run;
+      }
+      assert.equal(current.exit_code, 0, current.log_tail);
+      return await (await fetch(`${base}/studio/api/chat/${started.run.task_id}`)).json();
+    }
+
+    const drafted = await runTask("Build and validate a reusable uppercase capability",
+                                  "capability_tested");
+    assert.equal(drafted.verification_label, "verified 1/1");
+    assert.equal(drafted.counts.artifacts, 2);
+    assert.equal(drafted.artifacts[0].root, "lab");
+    assert.equal(drafted.artifacts[0].relative_path, "text_upper/text_upper.py");
+    const list = await (await fetch(`${base}/api/capabilities`)).json();
+    const candidate = list.capabilities.find(item => item.name === "text_upper");
+    assert.equal(candidate.status, "validated");
+    assert.equal(candidate.promoted_by, null);
+    assert.equal(candidate.validated_manifest["text_upper.py"],
+                 crypto.createHash("sha256").update(module).digest("hex"));
+    const toolsBefore = await (await fetch(`${base}/api/tools`)).json();
+    assert.equal(toolsBefore.tools.some(tool => tool.name === "text_uppercase"), false);
+    const reviewBefore = await (await fetch(`${base}/api/capabilities/text_upper/review`)).json();
+    assert.equal(reviewBefore.lab.unchanged, true);
+    assert.equal(reviewBefore.eligible_for_human_review, true);
+    assert.equal(reviewBefore.guardian_gate.ok, false, "no human baseline has been recorded yet");
+
+    const env = { ...process.env, PYTHONPATH: REPO_ROOT,
+      LIVIUM_HOME: home, LIVIUM_DB: path.join(home, "livium.db"),
+      LIVIUM_WORKSPACE: path.join(home, "workspace"),
+      LIVIUM_PROMOTED_DIR: path.join(home, "promoted"),
+      LIVIUM_PROVIDER: "scripted", LIVIUM_ALLOW_TEST_DOUBLE: "1",
+      LIVIUM_SCRIPT_FILE: path.join(home, "script.json") };
+    function humanCli(...args) {
+      const result = spawnSync(python, ["-m", "livium.cli", ...args], {
+        cwd: REPO_ROOT, env, timeout: 25000, encoding: "utf8",
+      });
+      assert.equal(result.status, 0, `${args.join(" ")} failed:\n${result.stderr}\n${result.stdout}`);
+    }
+    humanCli("guardian", "baseline", "--approved-by", "Test Operator");
+    humanCli("capability", "review", "text_upper");
+    humanCli("capability", "promote", "text_upper", "--approved-by", "Test Operator");
+    const activated = await (await fetch(`${base}/api/capabilities/text_upper/review`)).json();
+    assert.equal(activated.capability.status, "active");
+    assert.equal(activated.capability.promoted_by, "Test Operator");
+    assert.equal(activated.promoted.unchanged, true);
+
+    await fs.writeFile(path.join(home, "script.json"), JSON.stringify([
+      { tool_calls: [{ name: "text_uppercase", arguments: { text: "hello 42" } }] },
+      { tool_calls: [{ name: "finish_task", arguments: {
+        summary: "used the new tool", status: "complete",
+      } }] },
+    ]));
+    const reused = await runTask("Use text_uppercase on hello 42", "capability_tool_used");
+    assert.equal(reused.verification_label, "verified 1/1");
+    assert.equal(reused.messages.some(message => message.title === "text_uppercase" &&
+      message.meta?.ok === true), true, "new tool did not actually run");
+    const after = await (await fetch(`${base}/api/capabilities/text_upper/review`)).json();
+    assert.equal(after.capability.status, "maintained");
+    humanCli("capability", "deprecate", "text_upper", "--approved-by", "Test Operator",
+             "--reason", "superseded in test");
+    const deprecated = await (await fetch(`${base}/api/capabilities/text_upper/review`)).json();
+    assert.equal(deprecated.capability.status, "deprecated");
+    assert.equal(deprecated.promoted.observed, null, "retired tools must not remain installed");
+    humanCli("capability", "rollback", "text_upper", "--reason", "test completed");
+    const withdrawn = await (await fetch(`${base}/api/capabilities/text_upper/review`)).json();
+    assert.equal(withdrawn.capability.status, "rollback");
+    assert.equal(withdrawn.promoted.observed, null);
+  }, { script: [finish] });
 });

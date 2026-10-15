@@ -68,7 +68,7 @@ function taskIdOf() {
 
 function json(res, status, payload, { settings } = {}) {
   const body = JSON.stringify(payload, (key, value) =>
-    typeof value === "string" && settings ? scrub(value, settings.api_key) : value);
+    typeof value === "string" && settings ? scrub(value, settings) : value);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
@@ -131,9 +131,31 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
                                      repoRoot = null, settings = null } = {}) {
   const repo = repoRoot ?? await repoRootOf(HERE);
   const interpreter = await findPython(python);
-  const studioHome = home ?? process.env.LIVIUM_STUDIO_HOME ?? path.join(repo, ".livium");
-  await fs.mkdir(studioHome, { recursive: true, mode: 0o700 });
+  const requestedHome = home ?? process.env.LIVIUM_STUDIO_HOME ?? path.join(repo, ".livium");
+  await fs.mkdir(requestedHome, { recursive: true, mode: 0o700 });
+  const studioHome = await fs.realpath(requestedHome); // symlinked --home must not bypass key protection
   const studio = { home: studioHome, repo, python: interpreter, started_at: new Date().toISOString() };
+  // The workspace browser can visit the home root. A JSON preview is scrubbed,
+  // but a raw download of settings.json would leak the real key. Refuse every
+  // path to that file, for preview, download, upload and deletion alike.
+  const secretFile = path.resolve(studioHome, "settings.json");
+  const protectSecret = async (absolute, { deletion = false } = {}) => {
+    const target = path.resolve(absolute);
+    if (target === secretFile || (deletion && secretFile.startsWith(target + path.sep))) {
+      throw new PathRefused("settings.json is not a workspace file; use the Settings panel");
+    }
+    // A second filename can point at the SAME inode. A path-only check would let
+    // a hard link in workspace/ stream or overwrite the key, even though the
+    // canonical home path was blocked. Do not treat a matching inode as a new file.
+    try {
+      const [secret, candidate] = await Promise.all([fs.stat(secretFile), fs.stat(target)]);
+      if (secret.dev === candidate.dev && secret.ino === candidate.ino) {
+        throw new PathRefused("the selected file is the Studio's protected settings file");
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  };
   let current = settings ?? await readSettings(studioHome);
 
   const baseEnv = () => {
@@ -172,7 +194,7 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
   function describeBackend() {
     return {
       running: backend.running, port: backend.port, started_at: backend.startedAt,
-      last_error: backend.lastError, log_tail: scrub(backend.log, current.api_key).slice(-2000),
+      last_error: backend.lastError, log_tail: scrub(backend.log, current).slice(-2000),
     };
   }
 
@@ -203,7 +225,7 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
           config: status.status?.config ?? null,
         };
       } catch (error) {
-        payload.error = scrub(error.message, current.api_key);
+        payload.error = scrub(error.message, current);
       }
     }
     return payload;
@@ -229,12 +251,22 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
       signal: AbortSignal.timeout(method === "POST" ? 900000 : 60000),
     });
     const text = await response.text();
+    // Scrub decoded JSON values, not only its serialized bytes: a credential with
+    // quotes or newlines would be escaped on the wire and miss a raw substring check.
+    // Redaction changes the byte count, so frame the *outgoing* body, not the original.
+    let outgoing;
+    try {
+      outgoing = JSON.stringify(JSON.parse(text), (key, value) =>
+        typeof value === "string" ? scrub(value, current) : value);
+    } catch {
+      outgoing = scrub(text, current);
+    }
     res.writeHead(response.status, {
       "Content-Type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
-      "Content-Length": Buffer.byteLength(text),
+      "Content-Length": Buffer.byteLength(outgoing),
       "Cache-Control": "no-store",
     });
-    res.end(scrub(text, current.api_key));
+    res.end(outgoing);
   }
 
   async function handleApi(req, res, url) {
@@ -274,7 +306,7 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
     }
 
     if (route === "/studio/api/backend/log" && req.method === "GET") {
-      return json(res, 200, { log: scrub(backend.log, current.api_key).slice(-20000),
+      return json(res, 200, { log: scrub(backend.log, current).slice(-20000),
                               backend: describeBackend() }, { settings: current });
     }
 
@@ -348,6 +380,7 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
       const chosen = await rootFor(studio, baseEnv(), query.get("root"));
       const relative = query.get("path") ?? "";
       const info = await readFile(chosen.path, relative);
+      await protectSecret(info.absolute);
       if (query.get("download") === "1") {
         const bytes = await fs.readFile(info.absolute);
         res.writeHead(200, {
@@ -380,6 +413,7 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
       const directory = await realUnder(chosen.path, subdirectory);
       await fs.mkdir(directory, { recursive: true });
       const target = await realUnder(chosen.path, path.join(subdirectory, name));
+      await protectSecret(target);
       const body = await readBody(req);
       await fs.writeFile(target, body);
       const crypto = await import("node:crypto");
@@ -405,6 +439,10 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
       const chosen = await rootFor(studio, baseEnv(), query.get("root"));
       const relative = query.get("path") ?? "";
       const target = await realUnder(chosen.path, relative);
+      if (target === path.resolve(chosen.path)) {
+        throw new PathRefused("cannot delete a workspace root");
+      }
+      await protectSecret(target, { deletion: true });
       const stats = await fs.lstat(target);
       if (stats.isDirectory()) {
         const entries = await fs.readdir(target);

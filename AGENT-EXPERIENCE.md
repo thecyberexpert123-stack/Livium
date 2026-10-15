@@ -61,8 +61,10 @@ script performs proposal → scaffold → implement → test in order.
 tree. Found later while listing the directory.
 
 **What changed.** Tests redirect `registry.promoted_dir` into a temporary home and
-assert the repository is untouched afterwards. A *human-approved* promotion is
-supposed to install into `livium/promoted/`; a test doing it is pollution.
+assert the repository is untouched afterwards. That release installed approved
+modules into `livium/promoted/`; 0.5 installs the manifested package in the runtime
+home's `promoted/` directory instead. A test writing into either real installation
+is pollution.
 
 ## 6. The message a test asserted was produced by `unshare`, not by us
 
@@ -456,6 +458,63 @@ transcript it renders — messages, artifact digest, criteria outcomes, run stat
 back from the runtime that ran it. The list has to be edited whenever the page changes,
 which is the point: the edit is the reminder.
 
+## 37. A test result is about bytes, not a path that can change later
+
+**What happened.** The old capability path marked a module validated when tests
+passed, but promotion copied whatever occupied its path *later*. An edit to either
+the source or its tests between the two steps could be approved under yesterday's
+evidence. The loader also imported anything under `promoted/` before asking whether
+a human had approved that exact file.
+
+**What changed.** The runner records a manifest of the implementation, tests,
+helpers and resources; promotion compares it before and after copying, and the
+runtime checks installed digests against an Active/Maintained row before importing.
+A mutation is a load failure, not a tool. The source example and pre-manifest
+legacy modules are not silently whitelisted. Those checks protect the *meaning*
+of the evidence, not a privilege boundary against arbitrary code running as the
+same user.
+
+## 38. A scrubbed JSON API can still leak secrets through raw downloads
+
+**What happened.** `settings.json` was 0600 and JSON responses scrubbed the key,
+but the Node workspace browser exposed the runtime-home root and streamed file
+bytes unchanged when asked for `download=1`. A caller could download the key file
+without touching the settings API. The confidentiality claim was false.
+
+**What changed.** The browser refuses the settings file for preview, raw download,
+upload and delete (including deleting its parent recursively). A real-socket
+regression test attempts all paths. We also corrected the claim: this closes an
+HTTP route; a same-UID Python subprocess is still not filesystem-confined and
+must not be treated as untrusted or secret-blind.
+
+## 39. A real probe followed by a scripted task is not a real-provider demonstration
+
+**What happened.** Demonstration A1 probed the real provider and recorded the
+connection failure, but its task was constructed with the scripted client. The task
+ended partial and its error field was null, while the report said the real task was
+blocked. A2 was correctly labelled a test-double run; A1 was not.
+
+**What changed.** A1 now uses the same configured real client for both probe and task
+in an isolated home, even if the probe fails. It records the task's actual blocked
+status and error and refuses to call the demonstration blocked-by-environment if the
+task was scripted or never attempted. A local-connection-refused regression test
+pins the distinction. A2 remains the deliberately separate scripted run, and the
+old A1 evidence was replaced rather than rationalised.
+
+## 40. Redaction changes the length of a proxied reply
+
+**What happened.** The Node proxy scrubbed a secret from Python's JSON response
+but sent the original body's `Content-Length`. If redaction made the outgoing body
+longer, a browser could receive a truncated, invalid response; if shorter, it could
+wait for bytes that would never come. Matching raw JSON substrings also missed
+secrets with characters escaped on the wire.
+
+**What changed.** The proxy redacts decoded JSON values and measures the outgoing
+bytes after redaction. A real-socket test includes an escaped synthetic key and a
+long credential under an ordinary extra variable name, then checks the response
+parses and the byte count matches. Workspace files copied by the user remain raw
+downloads, so this is not a promise that arbitrary task data is secret-free.
+
 ---
 
 ## Rules derived from these lessons
@@ -506,3 +565,10 @@ form of the above, and `AGENTS.md` carries them into the workspace:
     eventually display the second.
 23. A contract test has to name the surface the product actually uses, and the surface
     changes: if the test never needs editing, it is not watching anything.
+24. Validation records what *exact files* passed; import only code whose current bytes
+    still match the human-approved result. A SHA-256 manifest is integrity, not a sandbox.
+25. Secret-handling reviews must follow raw download and file-browsing paths, not only
+    JSON serializers; a scrubbed response is no help if another route streams bytes.
+26. A demonstration must assert the identity and outcome of the task it *actually*
+    launched, not infer task evidence from a probe that used a different client.
+27. When transforming an HTTP body, recalculate its framing from the transformed bytes.

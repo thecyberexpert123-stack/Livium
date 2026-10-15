@@ -57,7 +57,7 @@ from .router import (
     signature_of,
 )
 from .store import Store, now
-from .tools import TOOL_META, ToolContext, ToolRegistry, ToolResult
+from .tools import ToolContext, ToolRegistry, ToolResult
 from .verification import Verifier, normalize_criteria, summarize
 
 
@@ -581,47 +581,60 @@ class LiviumAgent:
         return payload
 
     def load_promoted_capabilities(self) -> dict[str, Any]:
-        """Import promoted capability modules and register their tools.
+        """Register only intact, active, human-promoted packages.
 
-        Growth is real only if a promoted capability changes what the agent can
-        do, so this is the load path that makes that true. A module that fails to
-        import is excluded, reported, and recorded as a failure -- never skipped
-        silently.
+        A failed import, changed package, or tool-name collision is recorded as a
+        failure. Nothing partially registers if one tool in a package collides.
         """
 
         from .promoted import load_promoted
 
         loaded: list[str] = []
         failures: list[str] = []
-        for spec, handler, capability_name in load_promoted(self.capabilities.promoted_dir):
-            # The catalog reports where a tool came from and how far the lifecycle got:
-            # a promoted capability is 'active' because its tests passed and a human
-            # approved it, and an unvalidated one can never be loaded at all.
-            # The registry's row may predate the interface columns; bring it up to date
-            # from the module that is actually loaded, so selection describes real code.
-            self.capabilities.sync_metadata(capability_name)
-            record = self.capabilities.get(capability_name)
-            decorated = dict(spec)
-            decorated.setdefault("source", f"capability:{capability_name}")
-            decorated.setdefault("validation",
-                                 f"capability:{record.status}" if record else "capability:unknown")
-            if record is not None and record.required_permissions:
-                decorated.setdefault("permissions", list(record.required_permissions))
-            self.tools.register_external(decorated, handler)
-            loaded.append(spec["name"])
-            if capability_name not in self.loaded_capabilities:
-                self.loaded_capabilities.append(capability_name)
-        for path, error in load_promoted.last_failures:
+        entries = list(load_promoted(
+            self.capabilities.promoted_dir, approved=self.capabilities.approved_modules()
+        ))
+        import_failures = list(load_promoted.last_failures)
+        packages: dict[str, list[tuple[dict[str, Any], Callable]]] = {}
+        for spec, handler, capability_name in entries:
+            packages.setdefault(capability_name, []).append((spec, handler))
+        for name, tools in packages.items():
+            record = self.capabilities.get(name)
+            tool_names = [str(spec["name"]) for spec, _ in tools]
+            collision = set(tool_names) & set(self.tools.names())
+            if collision:
+                import_failures.append((self.capabilities.promoted_dir / name,
+                                        f"tool name(s) collide with existing tools: {sorted(collision)}"))
+                continue
+            if self.capabilities.sync_metadata(name) is None:
+                import_failures.append((self.capabilities.promoted_dir / name,
+                                        "could not verify the installed capability interface"))
+                continue
+            record = self.capabilities.get(name)
+            for spec, handler in tools:
+                decorated = dict(spec)
+                decorated.setdefault("source", f"capability:{name}")
+                decorated.setdefault("validation", f"capability:{record.status}")
+                if record.required_permissions:
+                    decorated.setdefault("permissions", list(record.required_permissions))
+                try:
+                    self.tools.register_external(decorated, handler)
+                except ValueError as exc:
+                    import_failures.append((self.capabilities.promoted_dir / name,
+                                            f"tool registration failed: {exc}"))
+                    continue
+                loaded.append(spec["name"])
+            if all(tool in loaded for tool in tool_names):
+                if name not in self.loaded_capabilities:
+                    self.loaded_capabilities.append(name)
+        for path, error in import_failures:
             failures.append(f"{path}: {error}")
             self.store.append_event(
                 "capability_load_failed", {"path": str(path), "error": error}
             )
         self.capability_load_failures = failures
-        return {
-            "loaded_tools": loaded,
-            "capabilities": self.loaded_capabilities,
-            "failures": failures,
-        }
+        return {"loaded_tools": loaded, "capabilities": self.loaded_capabilities,
+                "failures": failures}
 
     @property
     def approvals(self) -> Any:
@@ -1675,15 +1688,14 @@ class LiviumAgent:
         # rather than a list kept here, so a tool that starts writing to disk is
         # covered the moment it says so. `run_command` counts regardless: it can run an
         # interpreter, which can write anything.
-        meta = TOOL_META.get(tool) or {}
-        if tool == "run_command" or meta.get("side_effects"):
+        if tool == "run_command" or self.tools.side_effects(tool):
             self.guardian.watch(task_id=task_id, trigger=tool)
 
     def _capabilities_touched(self, task_id: str) -> list[str]:
         names: set[str] = set()
         for row in self.store.events(task_id=task_id, limit=200):
             if row["type"] in ("capability_proposed", "capability_scaffolded", "capability_tested",
-                               "capability_promoted"):
+                               "capability_promoted", "capability_maintained"):
                 try:
                     name = json.loads(row["payload"]).get("name")
                 except json.JSONDecodeError:

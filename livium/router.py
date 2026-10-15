@@ -86,7 +86,9 @@ TOOL_KEYWORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("remember", "recall", "memory", "learn", "lesson", "previously", "before"),
      ("memory_search", "memory_write", "memory_update", "memory_recent")),
     (("forget", "retire", "remove the record"), ("memory_forget", "memory_search")),
-    (("capability", "tool", "skill", "missing", "gap"), ("request_capability", "tool_info")),
+    (("capability", "tool", "skill", "missing", "gap"),
+     ("request_capability", "capability_status", "capability_scaffold",
+      "write_file", "read_file", "capability_test", "tool_info")),
     (("hash", "digest", "checksum", "unchanged"), ("sha256",)),
 )
 
@@ -101,12 +103,11 @@ TOOL_KEYWORDS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 META_TOOLS = ("finish_task", "request_capability", "tool_info", "record_discovery")
 
 #: A bound, not a target: how many tool interfaces one step may carry. It moved from
-#: seven to eight when `record_discovery` earned a permanent slot, because the meta
-#: tools come out of the same budget and the alternative was a step that could carry
-#: the note-taking tool but not the tool the objective actually named. The bound is
-#: what keeps a request from growing with the size of the catalog; the number itself
-#: is an economy decision, and a test pins it.
-MAX_EXPOSED_TOOLS = 8
+#: seven to eight when `record_discovery` earned a permanent slot. A capability-
+#: development task now needs *both* file operations and the real test interface in
+#: addition to those four meta tools, so ten slots let it finish without dropping the
+#: very tool that can validate the work. The catalog remains lazy and bounded.
+MAX_EXPOSED_TOOLS = 10
 
 
 @dataclasses.dataclass

@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .agent import LiviumAgent
-from .capabilities import CapabilityRegistry
+from .capabilities import CapabilityError
 from .config import Config
 from .discovery import DiscoveryQueue
 from .integrity import Integrity
@@ -222,14 +222,19 @@ class Handler(BaseHTTPRequestHandler):
                          "measurement and is never folded into them"),
             })
         if route == "/api/capabilities":
-            registry = CapabilityRegistry(
-                agent.store, lab=agent.config.paths.capability_lab
-            )
             return self._json(200, {
-                "capabilities": [c.as_dict() for c in registry.all()],
+                "capabilities": [c.as_dict() for c in agent.capabilities.all()],
                 "loaded_capability_tools": sorted(agent.loaded_capabilities),
                 "load_failures": agent.capability_load_failures,
             })
+        if route.startswith("/api/capabilities/") and route.endswith("/review"):
+            name = route[len("/api/capabilities/"):-len("/review")].strip("/")
+            try:
+                review = agent.capabilities.review(name)
+            except CapabilityError as exc:
+                return self._json(404, {"error": str(exc)})
+            review["guardian_gate"] = agent.guardian.promotion_gate(name)
+            return self._json(200, review)
         if route == "/api/context":
             rows = agent.store.query(
                 "SELECT * FROM context_report ORDER BY id DESC LIMIT ?",
@@ -375,9 +380,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/capabilities/test":
             name = str(body.get("name", ""))
-            registry = CapabilityRegistry(agent.store, lab=agent.config.paths.capability_lab)
             try:
-                result = registry.run_tests(name)
+                result = agent.capabilities.run_tests(name)
             except Exception as exc:
                 return self._json(400, {"error": f"{type(exc).__name__}: {exc}"})
             return self._json(200, result)

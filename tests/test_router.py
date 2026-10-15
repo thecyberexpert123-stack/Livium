@@ -26,7 +26,8 @@ from livium.router import (
 AVAILABLE = ("read_file", "list_dir", "write_file", "run_command", "sha256",
              "memory_search", "memory_write", "memory_recent", "memory_update",
              "memory_forget",
-             "request_capability", "tool_info", "finish_task",
+             "request_capability", "capability_scaffold", "capability_test",
+             "capability_status", "tool_info", "finish_task",
              "record_discovery", "discovery_update")
 
 

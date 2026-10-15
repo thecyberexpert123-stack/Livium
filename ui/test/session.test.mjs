@@ -100,10 +100,24 @@ test("a written file is an artifact with the digest the runtime recorded", () =>
   const [artifact] = payload.artifacts;
   assert.equal(artifact.path, "report.md", "the path is shown relative to the workspace");
   assert.equal(artifact.in_workspace, true);
+  assert.deepEqual([artifact.root, artifact.relative_path], ["workspace", "report.md"]);
   assert.equal(artifact.bytes, 45);
   assert.equal(artifact.sha256, "b97b727706cf5a19");
   assert.equal(artifact.purpose, "the deliverable");
   assert.equal(relativeToWorkspace(ENV, "/etc/passwd").in_workspace, false);
+});
+
+test("code written in the lab opens in the lab dock, not the workspace", () => {
+  const env = { ...ENV, LIVIUM_HOME: "/home/operator/.livium" };
+  const journal = [event(1, "tool_write", {
+    path: "/home/operator/.livium/capability-lab/line_count/line_count.py",
+    bytes: 101, sha256: "ab".repeat(32), verified_by_readback: true,
+  })];
+  const result = transcriptOf("abc123", { task: TASK, steps: [], verification: [] }, journal, env);
+  assert.deepEqual([result.artifacts[0].root, result.artifacts[0].relative_path],
+                   ["lab", "line_count/line_count.py"]);
+  assert.equal(result.artifacts[0].in_workspace, false);
+  assert.equal(result.messages[0].meta.root, "lab");
 });
 
 test("the completion summary is read as the runtime's own verdict", () => {

@@ -27,7 +27,7 @@ import threading
 from typing import Any, Iterator, Sequence
 
 #: Bumped when the schema gains something an older database must be told about.
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -135,7 +135,9 @@ CREATE TABLE IF NOT EXISTS capability (
     required_permissions TEXT NOT NULL DEFAULT '[]',
     implementation_ref TEXT,
     limitations TEXT,
-    version INTEGER NOT NULL DEFAULT 1
+    version INTEGER NOT NULL DEFAULT 1,
+    validated_manifest TEXT,
+    promoted_manifest TEXT
 );
 
 CREATE TABLE IF NOT EXISTS context_report (
@@ -368,6 +370,11 @@ class Store:
         ("capability", "implementation_ref", "TEXT"),
         ("capability", "limitations", "TEXT"),
         ("capability", "version", "INTEGER NOT NULL DEFAULT 1"),
+        # A passing test result is tied to the exact lab files it tested. Promotion
+        # refuses any subsequent edit (including a test edit); loading is likewise
+        # tied to the bytes the human approved, not merely to a filename or DB status.
+        ("capability", "validated_manifest", "TEXT"),
+        ("capability", "promoted_manifest", "TEXT"),
         # Ledger columns added after the table's first definition: a database created
         # in between has the table without them, so they must be added explicitly.
         # (Found by running the migration against a database created minutes earlier.)

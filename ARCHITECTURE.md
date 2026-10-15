@@ -49,17 +49,18 @@ livium/
   agent.py         the operational loop; ties the above together and persists state
   cli.py           operator surface
   server.py        HTTP API + viewer (stdlib http.server)
-  web/             dependency-free ES-module front end
-ui/                the Studio: an operator console, in Node, with no dependencies
-  server.mjs       static files, the console API, and a same-origin proxy to `livium serve`
-  lib/paths.mjs    workspace containment (textual *and* after symlinks are followed)
-  lib/settings.mjs the key and the settings file: 0600, one-way, never echoed
-  lib/session.mjs  journal events -> a transcript, a verdict and an artifact list
-  lib/backend.mjs  the child processes: `livium serve` and one `livium run` per task
-  public/          the page itself (no framework, no build step)
-  test/            node --test: containment, the key, the run, the transcript, the contract
+  web/             dependency-free ES-module runtime viewer (separate from Studio)
   prompts/         protected instruction files (FOUNDATIONAL, CONTRACT, GROWTH)
-  promoted/        human-promoted capability modules, loaded at startup
+  promoted/        source example; per-home promoted packages require DB approval+hash
+ui/                React + Vite UI, Node console over the Python runtime
+  server.mjs       compiled files, console API and same-origin proxy to `livium serve`
+  lib/paths.mjs    workspace containment (textual *and* symlink-aware)
+  lib/settings.mjs the key and settings file: 0600, one-way, never echoed
+  lib/session.mjs  journal events -> transcript, verdict and artifact list
+  lib/backend.mjs  child processes: `livium serve` and one `livium run` per task
+  src/             React components, styles and component tests
+  public/          checked-in Vite bundle and source hash (no build needed to run)
+  test/            node:test: paths, keys, API, live task + capability lifecycle
 ```
 
 Dependency direction is one-way: `agent` → everything; `tools` → permissions,
@@ -321,20 +322,33 @@ in `livium status`.
 ### Capability growth is a lifecycle, not a code generator
 
 `request_capability` records a proposal with a reuse analysis (direct reuse →
-composition → extension → new code) and a verification plan. `capability scaffold`
-creates a runnable skeleton; `capability test` runs its tests in a separate process.
-Two rules make the lifecycle honest:
+composition → extension → new code). The agent can then use the *actual* tools
+`capability_scaffold` (optional), `write_file` (module, helpers, resources and
+`test_*.py`) and `capability_test`. It can read `capability_status` without human
+intervention. The human CLI remains the only application path for promotion.
 
-- **A skeleton cannot validate itself.** Tests that only assert the scaffold's
-  behaviour would otherwise reach `validated`. The harness refuses to validate a
-  module that still contains scaffold markers, keeps the status at `experimental`, and
-  journals `capability_test_refused`.
-- **Only a human promotes.** `promote --approved-by "Name"` requires `validated`
-  status and passes the guardian gate; it copies the module into `livium/promoted/`,
-  where it is loaded at the next startup.
+- **A skeleton cannot validate itself.** The test tool refuses an implementation
+  with scaffold markers and journals the refusal. The tests and interface must run,
+  and their output is preserved; passing tests are evidence of those assertions,
+  not a general claim of correctness.
+- **Testing binds all files.** Schema v5 records SHA-256 for source, helpers,
+  resources *and tests*. Changed executable code during testing, a test edit after
+  validation or a changed helper before promotion makes that evidence inapplicable;
+  promotion refuses and asks for another test run. `capability review NAME` reports
+  the live-vs-tested manifest and the Guardian's actual gate without importing code.
+- **A human promotes.** `promote --approved-by "Name"` requires a validated,
+  unchanged package and a passing Guardian gate. It atomically copies the entire
+  package to `$LIVIUM_HOME/promoted/NAME/`. The loader checks the Active/Maintained
+  DB record and the *whole installed manifest before import*. Dropping a `.py`
+  there by hand cannot make it a callable tool; edited files fail closed.
+- **Use is an observed transition.** A successful call moves Active to Maintained,
+  with a journal event naming the tool and task; an unsuccessful call does not.
+  Rollback withdraws the package, preserving history, and the next run no longer
+  loads it. If an already-running process has the code loaded, it must restart.
 
-Rejection and rollback are first-class: a capability whose tests fail cannot be
-promoted, and a promoted one can be rolled back with its record intact.
+This is a functional lifecycle, **not an OS sandbox or cryptographic human
+identity check**: agent-executed Python and promoted Python run as the same user as
+the CLI/Studio. Read `docs/LIMITATIONS.md` §21 before trusting generated code.
 
 ### The guardian protects its own inputs
 
@@ -380,8 +394,8 @@ its own refresh timer, and a test asserts the poll writes nothing.
 
 ## The Studio: a console, not a second agent
 
-`ui/` is a Node HTTP server (Node 20+, zero npm dependencies) that does three things and
-nothing else: it serves a page, it proxies `/api/*` to `livium serve`, and it starts
+`ui/` includes a React + Vite application and a Node HTTP server (Node 22.12+). The
+server serves the checked-in bundle, proxies `/api/*` to `livium serve`, and starts
 `livium run` as a child process when the operator asks for a task. There is no second
 permission engine, no second loop and no second journal. When the page shows a refusal,
 a verification state, a written file or a token count, that value came over HTTP from the
@@ -390,12 +404,13 @@ Studio adds.
 
 This is a design constraint with consequences that are visible in the code:
 
-- **The API key goes one way.** It is typed into the page, written to
+- **The API key does not leave through the Studio API.** It is typed into the page, written to
   `<studio home>/settings.json` with mode 0600 in a 0700 directory, and passed to child
   processes as `LIVIUM_API_KEY` through the environment. Responses carry `api_key_set`,
   `api_key_length` and a hint; the key itself is never returned, never logged, and is
-  redacted from any outgoing string. A test asserts a saved key does not appear in the
-  state payload.
+  redacted from outgoing strings. The workspace browser explicitly refuses preview,
+  download, overwrite and deletion of `settings.json`. That is HTTP hygiene, not an
+  OS confidentiality boundary against Python running as the same user.
 - **Two halves of a path check.** Every workspace path is checked textually *and* after
   following symlinks, because a link inside the workspace that points at `/etc/passwd`
   passes the first check. Both refusals are tested.
@@ -414,20 +429,23 @@ The Studio never holds state that the runtime can contradict: it keeps the last
 `livium run` child per task so it can show a log and stop a task, and everything else is
 fetched.
 
-## Why Python, and why no other language
+## Why Python for the agent and Node/React for the console
 
 The decision was deliberate and is recorded here because the specification requires
 justification rather than preference. Python 3.11 was chosen because:
 
-- `sqlite3`, `unittest`, `http.server` and `subprocess` cover the entire requirement
-  with **zero** dependencies, and the whole system stays inspectable.
+- `sqlite3`, `unittest`, `http.server` and `subprocess` cover the **agent runtime**
+  with **zero** third-party dependencies; its permission boundary stays inspectable.
 - The agent's real bottlenecks are model latency and judgement, not CPU. A compiled
   component would add a toolchain, a build step, and an FFI boundary for no measurable
   capability — a complexity cost the specification explicitly forbids.
-- Deterministic, dependency-free tests are possible, which is what makes the honesty
-  claims in this document checkable.
+- Deterministic tests for the core require no installed packages; React component
+  tests use development-only npm packages. Neither type is evidence of model quality.
 
-The front end is plain JavaScript for the same reason: no build pipeline means no
-divergence between what is served and what is reviewed. If a future requirement is
-genuinely compute-bound (for example, local embeddings), it should be added as a
-measurement-backed decision — not as architecture in advance.
+The front end is **React + Vite** because the operator asked for a component
+application instead of a hand-wired DOM page. `ui/src/` is the source;
+`ui/public/` is the checked-in build. The Node server serves the latter and owns
+the API proxy and run lifecycle; Vite's dev server is optional and is not used in
+production. A build stamp checked by `ui/test/ui.test.mjs` prevents source and
+shipped bundle from silently diverging. UI dependencies do not enter the Python
+runtime; `npm ci` is needed only for development/build/tests, not for `node ui/server.mjs` to serve the committed assets.
