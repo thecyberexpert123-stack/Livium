@@ -3,6 +3,32 @@
 All notable changes to Agent Livium. Every entry states what was verified and how,
 because a change that was never exercised is not a change that works.
 
+## Unreleased — a chat-first Studio surface
+
+- Redesigned the existing React/Vite Studio as a chat-first AI workspace: searchable
+  task history, provider-status shortcut, responsive welcome and prompt cards, a
+  persistent composer, copyable safe Markdown/code, a file-attachment workflow and
+  an initially closed workspace drawer. Capability review, Journal, Settings and the
+  named-human-only promotion boundary remain available as operator sheets.
+- A paperclip or file drop writes the bytes through the actual Studio upload API;
+  the resulting server-accepted workspace path is added to the objective. Failed
+  uploads or failed task starts show errors and do not silently discard the draft.
+  Unsafe Markdown URLs cannot execute, raw HTML is not interpreted, and remote
+  images are not fetched by the rendered transcript.
+- Tool actions are folded but inspectable; permission refusals, agent-claimed
+  summaries and independent acceptance-check verdicts remain distinct. A pending
+  run is labelled as waiting for journal events rather than pretending to stream
+  model tokens. An unreachable provider stays unavailable; the scripted double is
+  explicitly labelled. Each normal send starts a fresh task/model conversation;
+  interrupted-task resume is not represented as continuous chat context.
+- **Verification:** 368 Python tests, 54 Node/API tests, 14 React component tests;
+  `npm audit --audit-level=low` reports no vulnerabilities. Tests cover Markdown
+  safety, attachment POST and accepted paths, draft preservation, status, history
+  filtering, drawer behaviour, tool inspection and unverified claims. The running
+  Studio preview uses the checked-in bundle and its loopback Python child. A hosted
+  model still could not be reached from this sandbox; UI fixtures and scripted
+  runs are not evidence of live model inference.
+
 ## [0.5.0] — a component Studio and a real extension path
 
 ### Studio (Node + React/Vite)

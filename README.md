@@ -54,7 +54,7 @@ A1; if unreachable, it records a blocked task, and only A2 uses a labelled test 
 python3 -m unittest discover -s tests -t tests      # 368 tests, no external network
 python3 demos/run_demonstrations.py                 # six demonstrations; A1 attempts a real provider
 python3 demos/run_mission_demos.py --approve-as "Your Name"   # ten mission demonstrations
-cd ui && npm ci && npm test                         # build + 53 Node/API + 5 React tests
+cd ui && npm ci && npm test                         # build + 54 Node/API + 14 React tests
 ```
 
 ---
@@ -149,20 +149,28 @@ process per task. Node is not a second permission engine, verifier or model clie
 The checked-in bundle has a source digest (`ui/public/source-hash.txt`); tests fail
 if a source edit is shipped without rebuilding it.
 
-It is laid out the way a chat window is: tasks on the left, the conversation in the
-middle, and the workspace the agent is working in on the right.
+It opens as a **chat-first AI workspace**: a welcome view, prompt suggestions and a
+persistent composer are primary. Recent tasks and a compact connection indicator live
+in the searchable sidebar. The file browser is initially closed and opens as a drawer
+on demand. Light and dark themes and narrow screens are supported.
 
 | Where | What it is for |
 | --- | --- |
-| **Sidebar** | every task that has run in this home with the runtime's verdict on it, a **New task** button, a theme switch, and the live health of the console (provider, probe age, key, runtime, isolation) |
-| **Conversation** | what you asked, what the model said, every tool call, every refusal by the permission engine, every file written, and the acceptance checks with the outcome the runtime recorded for each one. A file card's **Open** button shows that file in the workspace panel |
-| **Workspace panel** | the folder the agent works in: browse, preview, download, upload (drag and drop works), new folder, delete, and what changed in the last three hours. `▥` hides it |
-| **Run details** | folded into the conversation above the messages: the process, its live output, the steps, and the files it wrote with their digests |
-| **Capabilities** | proposed, experimental, validated, active, maintained and rolled-back capabilities, test output, SHA-256 manifest of *all* lab files, current-vs-tested comparison and the Guardian's live gate. Open lab code in the workspace dock; human promotion stays CLI-only because the Studio has no login |
-| **Journal / Settings** | the runtime's own records — events, deferred work, integrity, measured ledger rows — and the provider, model, base URL and API key |
+| **Sidebar** | search the latest 60 real tasks, see their recorded verdict, start a **New chat**, check whether the configured provider is usable or a labelled test double, and open the operator sheets |
+| **Conversation** | journal-backed messages with safe Markdown, copyable replies/code, collapsible recorded tool activity, visible permission refusals and artifacts. The agent's own final summary is labelled as a claim; acceptance checks have a separate runtime verdict. An artifact's **Open** button opens it in the workspace drawer |
+| **Composer** | `Enter` sends, `Shift+Enter` adds a line. Optional JSON acceptance criteria, force and interrupted-task resume are under **Acceptance criteria & options**. The paperclip or a file drop uploads *real bytes* to the runtime workspace and puts the server-accepted file path in the task objective; it does not attach an in-memory blob directly to a model request |
+| **Workspace drawer** | browse, preview, download, upload, create folders, delete and inspect recent files in the real workspace/lab/promoted roots; hidden by default |
+| **Run details** | expandable process state, recorded steps, output and artifact digests beneath the conversation; the UI shows progress as journal rows arrive, not fabricated token streaming |
+| **Capabilities** | proposed, experimental, validated, active, maintained and rolled-back capabilities, test output, SHA-256 manifest of *all* lab files, current-vs-tested comparison and the Guardian's live gate. Open lab code in the drawer; human promotion stays CLI-only because the Studio has no login |
+| **Journal / Settings** | the runtime's own events, deferred work, integrity and ledger rows; provider, model, base URL and write-only API key. Failed probes remain failures, with an actionable settings link, not a fallback to the scripted double |
 
-`Enter` starts a task, `Shift+Enter` writes a new line, `＋ New task` clears the view,
-`⌘/Ctrl-K`-style command palettes are deliberately absent: this console does one thing.
+**Important chat distinction:** by default each send starts a **new task and fresh
+model conversation**, even when the preceding task is still visible on screen. The
+**Resume** exception resumes an interrupted *task*, not conversational memory or a
+follow-up turn.
+The UI does not invent cross-task context or token streaming. Use **New chat** to clear
+the current view. A task with no acceptance criteria remains *unverified*. See
+`docs/LIMITATIONS.md` §20 for the remaining trust boundaries.
 
 The console has three settings of its own; they are environment variables because they
 belong to the console's own process, and `.env` is the runtime's file:

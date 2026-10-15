@@ -113,9 +113,9 @@ specific scripted-double home. Its counts, `livium/promoted/` location and
 “front end has no dependencies” statements describe that release, not 0.5.0.
 Do not read them as current guarantees.
 
-- Current code: Python 3.11 stdlib agent, schema v5, React/Vite component Studio
-  served by Node from checked-in assets. Tests: **368 Python**, **53 Node/API** and
-  **5 React component** cases passing. The source-hash test prevents shipping a
+- At the 0.5.0 checkpoint: Python 3.11 stdlib agent, schema v5, React/Vite component
+  Studio served by Node from checked-in assets. Tests: **368 Python**, **53 Node/API**
+  and **5 React component** cases passing. The source-hash test prevents shipping a
   stale production bundle.
 - The agent can now propose, scaffold, write an arbitrary lab package and run its
   real tests to Validated itself. The tested byte manifest covers source, helpers,
@@ -146,3 +146,19 @@ Do not read them as current guarantees.
   flat files require an explicit review and re-promotion. For exact limitations,
   migration and the environment's absent model-provider egress, see
   `docs/LIMITATIONS.md` §§9, 11, 20–21 and `CHANGELOG.md` 0.5.0.
+
+## Chat-first Studio update — UI evidence, not new model evidence
+
+The React application now leads with the conversation and a persistent composer.
+The workspace is an on-demand drawer. Searchable history, collapsed but inspectable
+tool activity, safe Markdown/code, runtime acceptance checks and human-gated
+capability review all remain connected to their actual APIs. Dragging/attaching a
+file sends its bytes to the Studio workspace API; the server-accepted path is named
+in the new task request. No model output is simulated by the page.
+
+**Checks at this update:** 368 Python, 54 Node/API and 14 React component tests pass.
+The refreshed production bundle matches its source hash; `npm audit --audit-level=low`
+finds zero vulnerabilities. These are component/API observations, not a hosted-model
+demonstration. This environment still lacks usable provider egress. A normal send
+starts a fresh task and model conversation, not a follow-up turn in a shared context;
+see `docs/LIMITATIONS.md` §20.

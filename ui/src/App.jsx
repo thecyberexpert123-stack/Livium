@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { get, remove, upload, write, workspaceUrl } from "./api.js";
-import { stateWarnings } from "./common.jsx";
 import { Sidebar } from "./Sidebar.jsx";
 import { Conversation } from "./Conversation.jsx";
 import { Workspace } from "./Workspace.jsx";
@@ -30,22 +29,31 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [resetToken, setResetToken] = useState(0);
-  const [theme, setTheme] = usePersisted("livium.theme", "dark");
+  const [theme, setTheme] = usePersisted("livium.theme", "light");
   const [sidebarValue, setSidebarValue] = usePersisted("livium.sidebar",
     typeof window !== "undefined" && window.innerWidth <= 760 ? "hidden" : "shown");
-  const [dockValue, setDockValue] = usePersisted("livium.dock",
-    typeof window !== "undefined" && window.innerWidth <= 1100 ? "hidden" : "shown");
+  // Chat is the primary surface; the real workspace is a drawer, not a panel
+  // consuming a third of every new conversation. A user's saved choice persists.
+  const [dockValue, setDockValue] = usePersisted("livium.dock", "hidden");
   const sidebarOpen = sidebarValue !== "hidden";
   const dockOpen = dockValue !== "hidden";
   const wasRunning = useRef(false);
 
-  useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   useEffect(() => {
-    if (!sheet) return undefined;
-    const onKey = event => { if (event.key === "Escape") setSheet(null); };
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content",
+      theme === "dark" ? "#171820" : "#ffffff");
+  }, [theme]);
+  useEffect(() => {
+    const onKey = event => {
+      if (event.key !== "Escape") return;
+      if (sheet) setSheet(null);
+      else if (dockOpen) setDockValue("hidden");
+      else if (window.innerWidth <= 760 && sidebarOpen) setSidebarValue("hidden");
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [sheet]);
+  }, [sheet, dockOpen, sidebarOpen, setDockValue, setSidebarValue]);
   useEffect(() => {
     if (!toast) return undefined;
     const timer = setTimeout(() => setToast(""), 4300);
@@ -64,14 +72,15 @@ export default function App() {
     refetchInterval: query => query.state.data?.run?.running ||
       (pendingRun?.running && pendingRun?.task_id === selectedId) ? 1500 : 8000 });
   const detail = selectedId ? taskQuery.data : null;
-  const runId = detail?.run?.id ?? row?.run?.id
-    ?? (pendingRun?.task_id === selectedId ? pendingRun.id : null);
+  const justStarted = pendingRun?.task_id === selectedId ? pendingRun : null;
+  // A resumed task can already have an older run on its row. Show/poll the new
+  // process rather than accidentally switching back to the old run's exit status.
+  const runId = justStarted?.id ?? detail?.run?.id ?? row?.run?.id;
   const runQuery = useQuery({ queryKey: ["run", runId],
     queryFn: () => get(`/studio/api/runs/${encodeURIComponent(runId)}`),
     enabled: Boolean(runId), retry: false,
     refetchInterval: query => query.state.data?.run?.running !== false ? 1500 : false });
-  const run = runQuery.data?.run ?? detail?.run ?? row?.run
-    ?? (pendingRun?.task_id === selectedId ? pendingRun : null);
+  const run = runQuery.data?.run ?? justStarted ?? detail?.run ?? row?.run;
   const workspaceQuery = useQuery({ queryKey: ["workspace", root, directory],
     queryFn: () => get(`/studio/api/workspace?root=${encodeURIComponent(root)}` +
                         `&path=${encodeURIComponent(directory)}`),
@@ -103,10 +112,10 @@ export default function App() {
       const started = await write("/studio/api/chat", body);
       setPendingRun(started.run);
       setSelectedId(started.run.task_id);
-      setDockValue("shown");
       await queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["task", started.run.task_id] });
       setToast("Started a real Livium run; waiting for its first journal entry.");
+      return started.run;
     } finally { setBusy(false); }
   }
   async function onStop() {
@@ -137,6 +146,14 @@ export default function App() {
       queryClient.invalidateQueries({ queryKey: ["recent", root] });
     } catch (error) { setBanner(`Upload failed: ${error.message}`); }
   }
+  async function attachFiles(files) {
+    // Attachments are actual workspace uploads, not blobs kept only in the UI.
+    // The composer uses the accepted server paths when it names them to the agent.
+    const placed = await upload("workspace", "", files);
+    queryClient.invalidateQueries({ queryKey: ["workspace", "workspace"] });
+    queryClient.invalidateQueries({ queryKey: ["recent", "workspace"] });
+    return placed;
+  }
   async function newFolder() {
     const name = window.prompt("Folder name");
     if (!name) return;
@@ -165,14 +182,20 @@ export default function App() {
       setToast(`Removed ${relative}.`);
     } catch (error) { setBanner(`Delete failed: ${error.message}`); }
   }
-  const warnings = stateWarnings(stateQuery.data);
+  // Connection problems have a dedicated, actionable state in the chat header.
+  // Reserve the red banner for operation errors; don't bury every conversation
+  // beneath a repeated probe failure or a test-double warning.
   const combinedBanner = [banner, stateQuery.error && `Studio unavailable: ${stateQuery.error.message}`,
-    ...warnings].filter(Boolean).join("\n\n");
+    stateQuery.data?.error,
+    stateQuery.data?.backend?.last_error &&
+      `Runtime backend failed to start: ${stateQuery.data.backend.last_error}`]
+    .filter(Boolean).join("\n\n");
   const taskError = taskQuery.error && !(taskQuery.error.status === 404 && run?.running)
     ? taskQuery.error : null;
   function newTask() {
     setSelectedId(null); setPendingRun(null); setResetToken(previous => previous + 1);
-    setBanner(""); setSheet(null);
+    setBanner(""); setSheet(null); setDockValue("hidden");
+    if (window.innerWidth <= 760) setSidebarValue("hidden");
   }
   function selectTask(id) {
     wasRunning.current = false;
@@ -192,12 +215,18 @@ export default function App() {
       onRefresh={() => tasksQuery.refetch()} onOpenSheet={setSheet}
       theme={theme} onTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
       onHide={() => setSidebarValue("hidden")} />
+    {sidebarOpen && <button className="sidebar-backdrop" type="button"
+      aria-label="Close conversations drawer" onClick={() => setSidebarValue("hidden")} />}
     <Conversation selectedId={selectedId} detail={detail} error={taskError}
-      run={run} banner={combinedBanner} busy={busy} resetToken={resetToken}
-      onOpenFile={openFile} onStop={onStop} onSubmit={onSubmit} onError={setBanner}
-      onShowSidebar={() => setSidebarValue("shown")}
-      onToggleDock={() => setDockValue(dockOpen ? "hidden" : "shown")}
+      state={stateQuery.data} run={run} banner={combinedBanner} busy={busy} resetToken={resetToken}
+      onOpenFile={openFile} onStop={onStop} onSubmit={onSubmit} onAttach={attachFiles}
+      onError={setBanner} onNew={newTask} onOpenSettings={() => setSheet("settings")}
+      onShowSidebar={() => { setSidebarValue("shown"); if (window.innerWidth <= 760) setDockValue("hidden"); }}
+      onToggleDock={() => { setDockValue(dockOpen ? "hidden" : "shown");
+        if (window.innerWidth <= 760) setSidebarValue("hidden"); }}
       dockOpen={dockOpen} />
+    {dockOpen && <button className="dock-backdrop" type="button"
+      aria-label="Close workspace drawer" onClick={() => setDockValue("hidden")} />}
     <Workspace roots={stateQuery.data?.studio?.roots} root={root} directory={directory}
       listing={workspaceQuery.data} listingError={workspaceQuery.error}
       recent={recentQuery.data} recentError={recentQuery.error} selected={selectedFile}

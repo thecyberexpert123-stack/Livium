@@ -186,6 +186,18 @@ test("an upload lands in the workspace and comes back byte-identical", { skip: m
     const listing = await (await fetch(`${base}/studio/api/workspace?root=workspace&path=uploads`)).json();
     assert.deepEqual(listing.entries.map((entry) => entry.name), ["brief.txt"]);
     assert.equal(listing.entries[0].size, body.length);
+
+    // The browser encodes Unicode filenames into an ASCII header; Node decodes
+    // them before validating the name. The accepted path is the one the composer uses.
+    const unicode = "résumé plan.txt";
+    const named = await fetch(`${base}/studio/api/workspace/file?root=workspace`, {
+      method: "POST", headers: { "X-Livium-Studio": "1",
+        "X-Livium-Path": encodeURIComponent(unicode), "X-Livium-Directory": "",
+        "Content-Type": "application/octet-stream" }, body: Buffer.from("actual contents"),
+    });
+    assert.equal(named.status, 201);
+    assert.equal((await named.json()).path, unicode);
+    assert.equal(await fs.readFile(path.join(home, "workspace", unicode), "utf8"), "actual contents");
   });
 });
 

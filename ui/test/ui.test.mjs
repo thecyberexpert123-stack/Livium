@@ -66,11 +66,21 @@ test("no inline handlers or hardcoded server output in the HTML shell", () => {
   }
 });
 
-test("the stylesheet covers all three responsive regions and the review sheet", () => {
+test("the stylesheet covers the chat, on-demand drawer and review sheet responsively", () => {
   for (const selector of [".app", ".sidebar", ".chat", ".dock", ".composer",
                           ".transcript", ".sheet", ".toast", ".capability-grid"]) {
     assert.match(styles, new RegExp(`\\${selector}\\b`), `${selector} is not styled`);
   }
+  assert.match(styles, /\.app\.dock-open \.dock\s*\{[^}]*position: fixed/);
   assert.match(styles, /\[data-theme="dark"\]/);
   assert.match(styles, /@media \(max-width: 760px\)/);
+});
+
+test("both development and committed production shells have the new chat branding", () => {
+  for (const html of [sourcePage, page]) {
+    assert.match(html, /<html lang="en" data-theme="light">/);
+    assert.match(html, /<title>Livium AI — Your agent workspace<\/title>/);
+    assert.match(html, /data:image\/svg\+xml,/);
+    assert.doesNotMatch(html, /🛠/);
+  }
 });

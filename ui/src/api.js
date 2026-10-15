@@ -33,16 +33,23 @@ export function workspaceUrl(root, path = "", extra = "") {
 }
 
 export async function upload(root, directory, files) {
+  const placed = [];
   for (const file of files) {
-    await request(`/studio/api/workspace/file?root=${encodeURIComponent(root)}`, {
+    // The server returns the actual, contained path it accepted. In the chat
+    // composer that path is named in the objective; never assume the browser's
+    // filename survived server-side normalisation unchanged.
+    placed.push(await request(`/studio/api/workspace/file?root=${encodeURIComponent(root)}`, {
       method: "POST",
       headers: {
-        ...WRITE_HEADER, "X-Livium-Path": file.name,
+        // HTTP headers cannot carry arbitrary Unicode filenames. The server
+        // decodes this UTF-8 URI component before its safe-upload-name check.
+        ...WRITE_HEADER, "X-Livium-Path": encodeURIComponent(file.name),
         "X-Livium-Directory": directory, "Content-Type": "application/octet-stream",
       },
       body: file,
-    });
+    }));
   }
+  return placed;
 }
 
 export async function imageBlobUrl(root, path) {

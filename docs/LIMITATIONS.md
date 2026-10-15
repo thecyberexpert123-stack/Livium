@@ -308,10 +308,24 @@ shows the task row's objective while a resumed task may have been started with a
 one (the difference is shown, not resolved), and the token figures are the provider's own
 report when there is one and a labelled estimate otherwise.
 
+**A chat-like interface is not a continuous model conversation.** A normal composer
+send starts a fresh task and a new model conversation; the visible previous task is
+history, not a transcript automatically sent as context for the next request. The
+optional resume control is for an interrupted task and also reconstructs state with a
+fresh model conversation; it is not a follow-up chat turn. Progress is polling of
+persisted journal records, not token streaming. Assistant Markdown is rendered without
+executing raw HTML or loading remote inline images; opening an external link is still
+a deliberate browser navigation. Attachments are uploaded into the actual workspace
+and their accepted paths added to the objective, not passed as images or binary
+multimodal inputs to the provider. The agent must choose to read those files; a file
+being named in a task does not prove it read or understood it. Removing an attachment
+chip only removes it from that unsent prompt, not from disk.
+
 **What "verified" means in the UI.** It is the runtime's verdict on the acceptance
 criteria, not a judgement of the work's quality: a criterion can be weak, and a task with
 no criteria is shown as *unverified* for exactly that reason. The Studio does not add a
-criterion, and nothing it displays should be read as one.
+criterion, and nothing it displays should be read as one. The final-summary message
+is the agent's own claim, not a replacement for the acceptance checks.
 
 ## 21. Authored Python is not a security sandbox; named-human promotion is an operational gate
 
