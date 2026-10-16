@@ -38,7 +38,13 @@ async function waitForHttp(url, { timeoutMs = 20000, intervalMs = 150 } = {}) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url, { headers: { Accept: "application/json" } });
-      if (response.ok || response.status === 404) return true;
+      if (response.ok || response.status === 404) {
+        // Drain the one-off readiness response before releasing the connection. Leaving
+        // its body unread can race the server's close on Windows Node builds and trip
+        // Undici's HTTP parser while it finishes the socket.
+        await response.arrayBuffer();
+        return true;
+      }
       lastError = `HTTP ${response.status}`;
     } catch (error) {
       lastError = error.message;
@@ -259,7 +265,12 @@ export class Runs {
 
 /** Find a usable Python, or say honestly that there is none. */
 export async function findPython(preferred) {
-  const candidates = [preferred, process.env.LIVIUM_PYTHON, "python3", "python"]
+  // On Windows, `python3` commonly resolves to a Microsoft Store execution alias.
+  // It can answer `--version` successfully while pointing at a different Python
+  // installation (without Livium's dependencies). Prefer the conventional `python`
+  // command there; Unix installations generally provide `python3` instead.
+  const defaults = process.platform === "win32" ? ["python", "python3"] : ["python3", "python"];
+  const candidates = [preferred, process.env.LIVIUM_PYTHON, ...defaults]
     .filter((value) => typeof value === "string" && value.length > 0);
   for (const candidate of candidates) {
     try {

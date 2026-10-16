@@ -25,7 +25,7 @@ export function artifactLocation(backendEnv, absolute) {
     if (!raw) continue;
     const base = path.resolve(raw);
     if (target === base || target.startsWith(base + path.sep)) {
-      return { root, relative_path: path.relative(base, target) };
+      return { root, relative_path: path.relative(base, target).split(path.sep).join("/") };
     }
   }
   return { root: null, relative_path: null };
@@ -37,7 +37,7 @@ export function relativeToWorkspace(backendEnv, absolute) {
   const root = path.resolve(workspace);
   const target = path.resolve(absolute);
   if (target === root || target.startsWith(root + path.sep)) {
-    return { path: path.relative(root, target), in_workspace: true };
+    return { path: path.relative(root, target).split(path.sep).join("/"), in_workspace: true };
   }
   return { path: target, in_workspace: false };
 }

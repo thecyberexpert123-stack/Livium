@@ -13,8 +13,12 @@
 //     that came back inside an error message from somewhere else is redacted too.
 
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export const SETTINGS_FILE = "settings.json";
 export const KEY_VARIABLE = "LIVIUM_API_KEY";
@@ -38,6 +42,32 @@ export const HONESTY_WARNINGS = Object.freeze({
 
 function settingsPath(studioHome) {
   return path.join(studioHome, SETTINGS_FILE);
+}
+
+async function secureWindowsSettingsFile(target) {
+  if (process.platform !== "win32") return;
+  const { stdout } = await execFileAsync("whoami.exe", ["/user", "/fo", "csv", "/nh"], {
+    windowsHide: true,
+  });
+  const sid = stdout.match(/S-1-(?:\d+-)+\d+/)?.[0];
+  if (!sid) throw new Error("could not determine the current Windows account SID");
+  // Remove inherited access and grant full control only to this account, SYSTEM,
+  // and Administrators. Argument arrays keep paths and SIDs out of the shell.
+  await execFileAsync("icacls.exe", [target, "/inheritance:r", "/grant:r",
+    `*${sid}:(F)`, "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"], { windowsHide: true });
+}
+
+/** Apply Windows ACLs to an existing settings file before it is read. */
+export async function protectSettingsFile(studioHome) {
+  if (process.platform !== "win32") return;
+  const target = settingsPath(studioHome);
+  try {
+    await fs.access(target);
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  await secureWindowsSettingsFile(target);
 }
 
 /** Read the settings file. A missing file is an empty configuration, not an error. */
@@ -94,14 +124,26 @@ export async function writeSettings(studioHome, patch) {
   }
   await fs.mkdir(studioHome, { recursive: true, mode: 0o700 });
   const target = settingsPath(studioHome);
-  const handle = await fs.open(target, "w", 0o600);
+  // Keep old contents until Windows ACLs are tightened. A newly created file is
+  // empty until protected, so a credential is never written under inherited ACLs.
+  let handle;
   try {
+    handle = await fs.open(target, "r+");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    handle = await fs.open(target, "wx+", 0o600);
+  }
+  try {
+    await secureWindowsSettingsFile(target);
+    await handle.truncate(0);
     await handle.writeFile(JSON.stringify(next, null, 2), "utf8");
     await handle.sync();
   } finally {
     await handle.close();
   }
-  await fs.chmod(target, 0o600); // open() honours umask; the secret file does not get to.
+  if (process.platform !== "win32") {
+    await fs.chmod(target, 0o600); // open() honours umask; the secret file does not get to.
+  }
   return next;
 }
 

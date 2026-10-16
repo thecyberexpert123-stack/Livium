@@ -11,8 +11,8 @@
     "start": "node server.mjs",
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test": "npm run build && node --test test/*.test.mjs && vitest run",
-    "test:server": "node --test test/*.test.mjs",
+    "test": "npm run build && node --test --test-force-exit test/*.test.mjs && vitest run",
+    "test:server": "node --test --test-force-exit test/*.test.mjs",
     "test:components": "vitest run"
   },
   "dependencies": {

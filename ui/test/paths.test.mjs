@@ -19,6 +19,19 @@ async function scratch() {
   return { root, workspace: path.join(root, "workspace") };
 }
 
+async function symlinkOrSkip(t, target, link) {
+  try {
+    await fs.symlink(target, link);
+    return true;
+  } catch (error) {
+    if (process.platform === "win32" && ["EPERM", "EACCES"].includes(error.code)) {
+      t.skip("Windows symlink creation requires Developer Mode or elevated privileges");
+      return false;
+    }
+    throw error;
+  }
+}
+
 test("segments refuses a path that is not relative", () => {
   assert.throws(() => segments("/etc/passwd"), PathRefused);
   assert.throws(() => segments("C:\\Windows\\system32"), PathRefused);
@@ -41,12 +54,12 @@ test("resolveUnder keeps the result under the root", async () => {
   assert.throws(() => resolveUnder(workspace, "../outside.txt"), PathRefused);
 });
 
-test("a symlink out of the workspace is refused once it is followed", async () => {
+test("a symlink out of the workspace is refused once it is followed", async (t) => {
   const { root, workspace } = await scratch();
   const outside = path.join(root, "outside.txt");
   await fs.writeFile(outside, "not the workspace's business\n");
-  await fs.symlink(outside, path.join(workspace, "escape.txt"));
-  await fs.symlink("/etc", path.join(workspace, "etc"));
+  if (!await symlinkOrSkip(t, outside, path.join(workspace, "escape.txt"))) return;
+  if (!await symlinkOrSkip(t, "/etc", path.join(workspace, "etc"))) return;
 
   // The textual check passes -- the name is inside the workspace. The resolved check
   // is the one that refuses, and it is the one that matters.
@@ -56,10 +69,11 @@ test("a symlink out of the workspace is refused once it is followed", async () =
   await assert.rejects(() => listDirectory(workspace, "etc"), PathRefused);
 });
 
-test("a symlink that stays inside the workspace is allowed", async () => {
+test("a symlink that stays inside the workspace is allowed", async (t) => {
   const { workspace } = await scratch();
   await fs.writeFile(path.join(workspace, "sub", "real.txt"), "inside\n");
-  await fs.symlink(path.join(workspace, "sub", "real.txt"), path.join(workspace, "link.txt"));
+  if (!await symlinkOrSkip(t, path.join(workspace, "sub", "real.txt"),
+                           path.join(workspace, "link.txt"))) return;
   assert.equal(await realUnder(workspace, "link.txt"), path.join(workspace, "sub", "real.txt"));
 });
 

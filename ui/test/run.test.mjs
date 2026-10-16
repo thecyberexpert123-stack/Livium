@@ -101,7 +101,7 @@ test("a task started through the Studio really runs and writes its file", { skip
     // The runtime says out loud that a test double answered, and that must survive all
     // the way into the log the Studio shows.
     assert.match(finished.log_tail, /test double/);
-    assert.match(finished.log_tail, /No real model/);
+    assert.match(finished.log_tail, /No real model/i);
     assert.equal((await fs.stat(path.join(home, "livium.db"))).size > 0, true);
   } finally {
     await runs.stopAll();

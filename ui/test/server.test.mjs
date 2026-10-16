@@ -47,6 +47,19 @@ async function withStudio(t, run) {
   return await run({ base, home, studio });
 }
 
+async function symlinkOrSkip(t, target, link) {
+  try {
+    await fs.symlink(target, link);
+    return true;
+  } catch (error) {
+    if (process.platform === "win32" && ["EPERM", "EACCES"].includes(error.code)) {
+      t.skip("Windows symlink creation requires Developer Mode or elevated privileges");
+      return false;
+    }
+    throw error;
+  }
+}
+
 test("the state the UI polls carries no key material", { skip: missing }, async (t) => {
   await withStudio(t, async ({ base, home }) => {
     await fetch(`${base}/studio/api/settings`, {
@@ -99,7 +112,14 @@ test("saving the key writes it 0600 and never echoes it", { skip: missing }, asy
 
     const stored = JSON.parse(await fs.readFile(path.join(home, "settings.json"), "utf8"));
     assert.equal(stored.api_key, KEY, "the key must be stored, or the runtime cannot use it");
-    assert.equal((await fs.stat(path.join(home, "settings.json"))).mode & 0o777, 0o600);
+    if (process.platform === "win32") {
+      const acl = spawnSync("icacls.exe", [path.join(home, "settings.json")], { encoding: "utf8" });
+      assert.equal(acl.status, 0, acl.stderr);
+      assert.equal((acl.stdout.match(/:\(F\)/g) ?? []).length, 3,
+                   "settings ACL should grant full control only to the account, SYSTEM, and Administrators");
+    } else {
+      assert.equal((await fs.stat(path.join(home, "settings.json"))).mode & 0o777, 0o600);
+    }
   });
 });
 
@@ -143,7 +163,7 @@ test("home browsing never returns the key file, even as a raw download", { skip:
 test("a symlinked --home is canonicalised before protecting settings.json", { skip: missing }, async (t) => {
   const real = await fs.mkdtemp(path.join(os.tmpdir(), "livium-studio-real-"));
   const alias = `${real}-alias`;
-  await fs.symlink(real, alias);
+  if (!await symlinkOrSkip(t, real, alias)) return;
   t.after(async () => { await fs.unlink(alias); });
   await writeSettings(real, { api_key: KEY });
   const studio = await createStudio({ home: alias, port: 0, host: "127.0.0.1", python });
@@ -206,7 +226,7 @@ test("paths that climb out or follow a symlink out are refused", { skip: missing
     const workspace = path.join(home, "workspace");
     const outside = path.join(home, "outside.txt");
     await fs.writeFile(outside, "outside\n");
-    await fs.symlink(outside, path.join(workspace, "escape.txt"));
+    if (!await symlinkOrSkip(t, outside, path.join(workspace, "escape.txt"))) return;
 
     const climb = await fetch(`${base}/studio/api/workspace/file?root=workspace&path=..%2F..%2Fetc%2Fpasswd`);
     assert.equal(climb.status, 400);

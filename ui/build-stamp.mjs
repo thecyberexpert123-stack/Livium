@@ -24,7 +24,7 @@ export async function sourceDigest() {
     .sort();
   const digest = crypto.createHash("sha256");
   for (const filename of files) {
-    digest.update(path.relative(ROOT, filename));
+    digest.update(path.relative(ROOT, filename).split(path.sep).join("/"));
     digest.update("\0");
     digest.update(await fs.readFile(filename));
     digest.update("\0");

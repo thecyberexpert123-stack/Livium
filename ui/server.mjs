@@ -26,7 +26,8 @@ import { Backend, Runs, findPython, repoRootOf } from "./lib/backend.mjs";
 import { listDirectory, PathRefused, readFile, realUnder, safeUploadName } from "./lib/paths.mjs";
 import { transcriptOf, verificationLabel, verificationOf } from "./lib/session.mjs";
 import {
-  childEnvironment, fingerprintOf, publicSettings, readSettings, scrub, writeSettings,
+  childEnvironment, fingerprintOf, protectSettingsFile, publicSettings, readSettings, scrub,
+  writeSettings,
 } from "./lib/settings.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -134,6 +135,7 @@ export async function createStudio({ home, port = 8877, host = "127.0.0.1", pyth
   const requestedHome = home ?? process.env.LIVIUM_STUDIO_HOME ?? path.join(repo, ".livium");
   await fs.mkdir(requestedHome, { recursive: true, mode: 0o700 });
   const studioHome = await fs.realpath(requestedHome); // symlinked --home must not bypass key protection
+  await protectSettingsFile(studioHome);
   const studio = { home: studioHome, repo, python: interpreter, started_at: new Date().toISOString() };
   // The workspace browser can visit the home root. A JSON preview is scrubbed,
   // but a raw download of settings.json would leak the real key. Refuse every
