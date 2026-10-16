@@ -20,9 +20,12 @@ returned as a real error -- there is no fallback that fabricates a completion.
 from __future__ import annotations
 
 import dataclasses
+import email.utils
 import json
+import math
 import os
 import pathlib
+import re
 import sqlite3
 import time
 import urllib.error
@@ -30,6 +33,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Sequence
 
+from . import __version__
 from .config import Config
 
 class ModelError(RuntimeError):
@@ -105,6 +109,12 @@ class CredentialMissing(ModelError):
 class ProviderRejected(ModelError):
     """The provider answered, but refused the request (status >= 400)."""
 
+    def __init__(self, message: str, *, status_code: int | None = None,
+                 retry_after: float | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
 
 @dataclasses.dataclass
 class ToolCall:
@@ -169,6 +179,8 @@ def detect_provider(base_url: str) -> str:
     set LIVIUM_PROVIDER explicitly; the result is always echoed in reports."""
 
     host = base_url.lower()
+    if "api.groq.com" in host:
+        return "groq"
     if "anthropic" in host:
         return "anthropic"
     if ":11434" in host and "/v1" not in host:
@@ -388,7 +400,15 @@ class ModelClient:
         method: str = "POST",
     ) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        # Identify this as a server-side Livium client rather than urllib's generic
+        # default. Some API front doors apply signature rules to anonymous/default
+        # HTTP clients; do not impersonate a browser or another provider SDK.
+        request_headers = {
+            **headers,
+            "Accept": "application/json",
+            "User-Agent": f"Livium/{__version__}",
+        }
+        request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
         try:
             if (urllib.parse.urlsplit(url).hostname or "").lower() == "integrate.api.nvidia.com":
                 NvidiaRequestPacer(self.config.paths.home).wait_for_slot()
@@ -396,8 +416,21 @@ class ModelClient:
                 payload = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:2000]
+            retry_after = _retry_after_seconds(
+                exc.headers.get("Retry-After") if exc.headers else None, detail
+            ) if exc.code == 429 else None
+            if exc.code == 403 and "1010" in detail:
+                raise ProviderRejected(
+                    f"{self.name} was denied by Cloudflare with error 1010 at {url}. "
+                    "This is an access/signature block before model inference, not a "
+                    "model-ID or API-key rejection. Livium sent its identified "
+                    "server-side User-Agent; retry from a different trusted network "
+                    "or ask Groq support to review the block.",
+                    status_code=exc.code,
+                ) from exc
             raise ProviderRejected(
-                f"{self.name} returned HTTP {exc.code} for {url}: {detail}"
+                f"{self.name} returned HTTP {exc.code} for {url}: {detail}",
+                status_code=exc.code, retry_after=retry_after,
             ) from exc
         except urllib.error.URLError as exc:
             raise ProviderUnavailable(
@@ -443,12 +476,21 @@ class OpenAICompatibleClient(ModelClient):
             ]
             body["tool_choice"] = "auto"
         if (urllib.parse.urlsplit(self.base_url).hostname or "").lower() == "integrate.api.nvidia.com":
+            try:
+                reasoning_budget = int(os.environ.get("LIVIUM_NVIDIA_REASONING_BUDGET", "4096"))
+            except ValueError as exc:
+                raise ModelError("LIVIUM_NVIDIA_REASONING_BUDGET must be an integer") from exc
+            if not 128 <= reasoning_budget <= 32768:
+                raise ModelError("LIVIUM_NVIDIA_REASONING_BUDGET must be between 128 and 32768")
             # NVIDIA's Nemotron model card recommends non-empty assistant content for
             # coding-agent integrations. Its tool-calling examples also explicitly
-            # enable the reasoning template used to produce tool calls.
+            # enable the reasoning template used to produce tool calls. Bound the
+            # default reasoning budget so the hosted model does not spend its full
+            # default budget thinking before returning an agent action.
             body["chat_template_kwargs"] = {
                 "enable_thinking": True,
                 "force_nonempty_content": True,
+                "reasoning_budget": reasoning_budget,
             }
 
         started = time.monotonic()
@@ -480,7 +522,7 @@ class OpenAICompatibleClient(ModelClient):
             text=(message.get("content") or "").strip(),
             tool_calls=calls,
             stop_reason=str(choice.get("finish_reason") or ""),
-            usage=payload.get("usage") or {},
+            usage=normalize_token_usage(payload.get("usage")),
             latency_ms=latency_ms,
             provider=self.provider,
             model=str(payload.get("model") or self.model),
@@ -506,6 +548,23 @@ class OpenAICompatibleClient(ModelClient):
             models=models,
             model_present=present,
         )
+
+
+class GroqClient(OpenAICompatibleClient):
+    """Groq's OpenAI-compatible API with Groq-specific defaults and identity."""
+
+    provider = "groq"
+
+    def __init__(self, config: Config):
+        super().__init__(config)
+        self.name = f"groq@{config.model.base_url}"
+
+    def _headers(self) -> dict[str, str]:
+        if not self.config.model.api_key:
+            raise CredentialMissing(
+                "the Groq API requires a key: set LIVIUM_API_KEY or GROQ_API_KEY."
+            )
+        return super()._headers()
 
 
 class AnthropicClient(ModelClient):
@@ -717,7 +776,7 @@ class ScriptedClient(ModelClient):
             raise CredentialMissing(
                 "the scripted client is a test double and is disabled. Set "
                 "LIVIUM_ALLOW_TEST_DOUBLE=1 only in automated tests, or configure a "
-                "real provider (LIVIUM_PROVIDER=openai_compatible|anthropic|ollama)."
+                "real provider (LIVIUM_PROVIDER=openai_compatible|groq|anthropic|ollama)."
             )
         super().__init__(config)
         self.name = "scripted-test-double"
@@ -800,12 +859,84 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
     return {"_raw": text}
 
 
+def normalize_token_usage(raw: Any) -> dict[str, int]:
+    """Return only the flat numeric token counts the agent consumes.
+
+    Providers often attach nested detail objects to ``usage``.
+    A provider or proxy can also return an unexpected object in one of the top-level
+    count fields. Passing those values through could make accounting attempt numeric
+    conversion on metadata. Preserve the complete provider response in
+    ``ModelReply.raw``; keep this accounting view small and safe.
+    """
+
+    if not isinstance(raw, dict):
+        return {}
+
+    normalized: dict[str, int] = {}
+    for target, aliases in (
+        ("prompt_tokens", ("prompt_tokens", "input_tokens")),
+        ("completion_tokens", ("completion_tokens", "output_tokens")),
+    ):
+        for key in aliases:
+            value = raw.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                if isinstance(value, float) and not math.isfinite(value):
+                    continue
+                normalized[target] = max(0, int(value))
+                break
+            if isinstance(value, str):
+                try:
+                    normalized[target] = max(0, int(value))
+                    break
+                except ValueError:
+                    continue
+    return normalized
+
+
+def _retry_after_seconds(header: str | None, detail: str) -> float | None:
+    """Read a bounded-retry hint from a standard header or provider error text."""
+
+    if header:
+        try:
+            value = float(header.strip())
+            if math.isfinite(value) and value >= 0:
+                return value
+        except ValueError:
+            try:
+                parsed = email.utils.parsedate_to_datetime(header)
+                value = parsed.timestamp() - time.time()
+                if math.isfinite(value):
+                    return max(0.0, value)
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+    try:
+        payload = json.loads(detail)
+        message = payload.get("error", {}).get("message", "")
+    except (TypeError, ValueError, AttributeError):
+        message = detail
+    if not isinstance(message, str):
+        return None
+    match = re.search(
+        r"(?:try again in|retry after)\s+([0-9]+(?:\.[0-9]+)?)\s*(?:seconds?|secs?|s)\b",
+        message, re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = float(match.group(1))
+    return value if math.isfinite(value) else None
+
+
 def build_client(config: Config, script: Sequence[dict[str, Any]] | None = None) -> ModelClient:
     """Construct the configured client. Raises on unusable configuration."""
 
     provider = config.model.provider
     if provider == "openai_compatible":
         return OpenAICompatibleClient(config)
+    if provider == "groq":
+        return GroqClient(config)
     if provider == "anthropic":
         return AnthropicClient(config)
     if provider == "ollama":

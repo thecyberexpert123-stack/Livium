@@ -515,6 +515,53 @@ long credential under an ordinary extra variable name, then checks the response
 parses and the byte count matches. Workspace files copied by the user remain raw
 downloads, so this is not a promise that arbitrary task data is secret-free.
 
+## 41. A durable calibration record must be read in the shape it was written
+
+**What happened.** `TokenBudget.calibrate()` stored an object containing `factor`,
+`last_estimated` and `last_observed`, while `TokenBudget.__init__()` converted the
+whole object to `float`. The first live Studio smoke task therefore failed before it
+made a model request with `TypeError: float() argument must be a string or a real
+number, not 'dict'`.
+
+**What changed.** The reader now extracts `factor`, still accepts legacy scalar values,
+and uses a neutral factor with a visible context warning if stored metadata is malformed
+or outside its supported range. A regression test calibrates, reloads, and checks the
+persisted value; another checks the invalid-metadata fallback. The actual Groq task then
+passed startup and reached real tool execution.
+
+## 42. A rate limit is recoverable only when its wait is observed and bounded
+
+**What happened.** Groq returned HTTP 429 after Livium had already performed a real
+workspace write. The response included a token-per-minute reset delay, but Livium
+treated the rejection as terminal, leaving a verified artifact in a blocked task.
+
+**What changed.** HTTP 429 errors retain their status and parsed retry delay from the
+standard `Retry-After` header or provider message. The agent waits only when a hint is
+available and is at most 60 seconds, retries within `LIVIUM_MODEL_RETRIES`, and journals
+each wait. Tool calls are not replayed by this model retry. A deterministic orchestration
+test asserts the wait, retry and event.
+
+**Observed result.** A live Groq Studio task encountered six 429 responses, resumed
+after the provider-directed waits, and completed with the file present and both
+acceptance checks passing. This is evidence for that workflow and provider window, not a
+general guarantee that every request or task will succeed. The local Guardian also
+reported that its 12 protected files have no baseline; detection remains unavailable
+until a human establishes one.
+
+## 43. A completion cycle is not a provider request attempt
+
+**What happened.** The Groq smoke run produced six model replies and six rate-limit
+retry events, but the task's `model_calls` field counted only the six completion cycles.
+The event journal exposed the extra work, while the primary metric undercounted it.
+
+**What changed.** Livium now journals `model_request_attempt` immediately before each
+provider request. `model_calls` counts those attempts, and `model_failures` counts
+attempts without a completion, including rate-limit and context-rejection retries.
+The deterministic retry test asserts two attempts and one failed attempt for a
+rate-limited request followed by a successful completion. The earlier live smoke's task
+row predates this counter; its six retry events and six reply events, rather than that
+row's `model_calls`, are the evidence for its request count.
+
 ---
 
 ## Rules derived from these lessons

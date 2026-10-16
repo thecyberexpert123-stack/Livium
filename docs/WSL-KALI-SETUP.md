@@ -48,10 +48,12 @@ LIVIUM_CONTEXT_WINDOW=1000000
 LIVIUM_MAX_OUTPUT_TOKENS=4096
 ```
 
-Use the provider and model that match your key. `openai_compatible` supports the
-OpenAI-compatible endpoint configured by `LIVIUM_BASE_URL`; Anthropic and Ollama have
-their own provider settings. Do not paste the key into a task prompt, terminal command,
-issue, or chat. The helper loads `.env` into its own process and does not print values.
+Use the provider and model that match your key. For Groq, set
+`LIVIUM_PROVIDER=groq` and `GROQ_API_KEY=...` (or use `LIVIUM_API_KEY`); its default
+base URL is `https://api.groq.com/openai/v1`. `openai_compatible` supports other
+OpenAI-compatible endpoints through `LIVIUM_BASE_URL`; Anthropic and Ollama have their
+own provider settings. Do not paste the key into a task prompt, terminal command, issue,
+or chat. The helper loads `.env` into its own process and does not print values.
 
 The NVIDIA endpoint is paced at 1.6 seconds between request starts (at most 37.5 RPM),
 with reservations shared by Livium processes using the same `LIVIUM_HOME`. This leaves

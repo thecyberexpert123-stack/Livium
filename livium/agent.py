@@ -42,6 +42,7 @@ from .models import (
     ProviderRejected,
     ProviderUnavailable,
     build_client,
+    normalize_token_usage,
 )
 from .permissions import PermissionEngine
 from .ledger import Ledger, classify as classify_task, evidence_for_experience
@@ -482,15 +483,13 @@ class LiviumAgent:
         reported = 0
         for row in self.store.events(task_id=task_id, event_type="model_reply", limit=500):
             try:
-                usage = (json.loads(row["payload"]) or {}).get("usage") or {}
+                usage = normalize_token_usage(
+                    (json.loads(row["payload"]) or {}).get("usage")
+                )
             except (TypeError, ValueError):
                 continue
             in_tokens = usage.get("prompt_tokens")
-            if in_tokens is None:
-                in_tokens = usage.get("input_tokens")
             out_tokens = usage.get("completion_tokens")
-            if out_tokens is None:
-                out_tokens = usage.get("output_tokens")
             if in_tokens is None and out_tokens is None:
                 continue
             reported += 1
@@ -947,12 +946,21 @@ class LiviumAgent:
                 # notices nothing; a follow-up task gets its cycle's budget, so the
                 # loop cannot spend past the limit and report it afterwards.
                 spend("steps", 1)
+                attempts_before = len(self.store.events(
+                    task_id=task_id, event_type="model_request_attempt", limit=500
+                ))
                 reply = self._call_model(conversation, built, observations,
                                          tool_names=exposed_last, task_id=task_id,
                                          spend=spend)
-                model_calls += 1
+                attempts_after = len(self.store.events(
+                    task_id=task_id, event_type="model_request_attempt", limit=500
+                ))
+                attempts_this_call = max(0, attempts_after - attempts_before)
+                model_calls += attempts_this_call
+                model_failures += max(
+                    0, attempts_this_call - (1 if reply is not None else 0)
+                )
                 if reply is None:
-                    model_failures += 1
                     status = "blocked"
                     error = observations[-1] if observations else "model call failed"
                     self._step_end(task_id, step, "failed", error)
@@ -1348,13 +1356,9 @@ class LiviumAgent:
                 payload = json.loads(row["payload"])
             except (TypeError, ValueError):
                 continue
-            usage = payload.get("usage") or {}
+            usage = normalize_token_usage(payload.get("usage"))
             in_tokens = usage.get("prompt_tokens")
-            if in_tokens is None:
-                in_tokens = usage.get("input_tokens")
             out_tokens = usage.get("completion_tokens")
-            if out_tokens is None:
-                out_tokens = usage.get("output_tokens")
             if in_tokens is None and out_tokens is None:
                 continue
             reported += 1
@@ -1497,23 +1501,53 @@ class LiviumAgent:
         if tool_names and not tools:  # every selected name was unknown: never send none
             tools = self.tools.specs()
         prompt_estimate = built.report["tokens_estimated"]
-        for attempt in (1, 2):
+        max_retries = max(0, int(self.config.model.max_retries))
+        max_attempts = max_retries + 1
+        context_compacted = False
+        for attempt in range(1, max_attempts + 1):
             spend("model_calls", 1)  # before the attempt, not after it succeeded
+            self.store.append_event(
+                "model_request_attempt",
+                {"attempt": attempt, "provider": self.client.provider,
+                 "model": self.client.model},
+                task_id=task_id or None,
+            )
             try:
                 reply = self.client.complete(conversation, tools)
             except ProviderRejected as exc:
                 message = str(exc)
-                too_long = any(
+                if (exc.status_code == 429 and exc.retry_after is not None
+                        and attempt <= max_retries and 0 <= exc.retry_after <= 60):
+                    # Rate-limit responses such as Groq's TPM limit include the reset
+                    # delay. Retrying immediately repeats the same failure; waiting a
+                    # provider-directed interval (capped at one minute) allows the task to continue
+                    # without hiding the extra request or exceeding its call budget.
+                    delay = max(0.05, exc.retry_after + 0.1)
+                    self.store.append_event(
+                        "model_rate_limit_retry",
+                        {"attempt": attempt, "status_code": exc.status_code,
+                         "retry_after_seconds": exc.retry_after,
+                         "wait_seconds": delay},
+                        task_id=task_id or None,
+                    )
+                    observations.append(
+                        f"provider rate-limited the request; retrying after "
+                        f"{delay:.2f}s as directed by the provider"
+                    )
+                    time.sleep(delay)
+                    continue
+                too_long = exc.status_code != 429 and any(
                     token in message.lower()
                     for token in ("context", "too long", "maximum", "token", "length")
                 )
-                if too_long and attempt == 1:
+                if too_long and not context_compacted and attempt <= max_retries:
                     # Real recovery for a real failure mode: drop the oldest context
-                    # turns and retry once, then report honestly if it still fails.
+                    # turns and retry within the configured model retry budget.
                     dropped = self._compact(conversation, built, observations, aggressive=True)
+                    context_compacted = True
                     observations.append(
                         f"provider rejected the request as too long; dropped {dropped} older "
-                        f"context turn(s) and retrying once"
+                        f"context turn(s) and retrying"
                     )
                     self.store.append_event(
                         "context_rejected",
@@ -1554,17 +1588,17 @@ class LiviumAgent:
             # only be charged after the reply -- its size is not known in advance -- so
             # an overspend here stops the *next* call, which is the whole of what a
             # token limit can honestly promise.
-            usage = reply.usage or {}
-            in_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
-            out_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+            usage = normalize_token_usage(reply.usage)
+            in_tokens = usage.get("prompt_tokens")
+            out_tokens = usage.get("completion_tokens")
             if in_tokens is not None or out_tokens is not None:
-                spend("tokens", float(in_tokens or 0) + float(out_tokens or 0))
+                spend("tokens", in_tokens + out_tokens)
             return reply
         return None
 
     def _calibrate(self, estimated: int, usage: dict[str, Any]) -> None:
-        observed = usage.get("prompt_tokens") or usage.get("input_tokens")
-        if isinstance(observed, int) and observed > 0:
+        observed = normalize_token_usage(usage).get("prompt_tokens")
+        if observed is not None and observed > 0:
             budget = TokenBudget(self.config, self.store)
             budget.calibrate(estimated, observed)
 

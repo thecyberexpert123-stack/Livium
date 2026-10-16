@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from typing import Any, Iterable, Sequence
 
 from .capabilities import CapabilityRegistry
@@ -92,7 +93,28 @@ class TokenBudget:
         reserve = config.model.max_output_tokens + int(window * config.model.safety_margin)
         self.reserve = min(reserve, max(window // 2, 256))
         self.available = max(window - self.reserve, 512)
-        self.calibration = float(store.get_meta("token_calibration", 1.0) or 1.0)
+        raw_calibration = store.get_meta("token_calibration", None)
+        # ``calibrate`` stores the factor alongside its last measured sample, so the
+        # durable value is normally an object rather than a scalar. Accept both forms
+        # to support old homes, and fail back to a labelled neutral estimate instead
+        # of preventing every task from starting when metadata is malformed.
+        self.calibration_warning = ""
+        if raw_calibration is None:
+            raw_calibration = 1.0
+        elif isinstance(raw_calibration, dict):
+            if "factor" in raw_calibration:
+                raw_calibration = raw_calibration["factor"]
+            else:
+                raw_calibration = object()
+        try:
+            calibration = float(raw_calibration if raw_calibration is not None else 1.0)
+        except (TypeError, ValueError, OverflowError):
+            calibration = 1.0
+            self.calibration_warning = "stored calibration was invalid; using 1.0"
+        if not math.isfinite(calibration) or not 0.5 <= calibration <= 2.0:
+            calibration = 1.0
+            self.calibration_warning = "stored calibration was outside 0.5–2.0; using 1.0"
+        self.calibration = calibration
 
     def estimate(self, text: str) -> int:
         return int(estimate_tokens(text) * self.calibration)
@@ -122,6 +144,7 @@ class TokenBudget:
             "window": self.window, "window_source": self.window_source,
             "reserve": self.reserve, "available_for_prompt": self.available,
             "estimate_calibration": self.calibration,
+            "calibration_warning": self.calibration_warning,
         }
 
 

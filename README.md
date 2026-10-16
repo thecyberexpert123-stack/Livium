@@ -97,7 +97,8 @@ refuses to run against a model the provider does not offer.
 
 | `LIVIUM_PROVIDER`   | speaks                   | covers                                                     |
 | ------------------- | ------------------------ | ---------------------------------------------------------- |
-| `openai_compatible` | `/chat/completions`      | OpenAI, OpenRouter, Groq, Together, DeepSeek, vLLM, LM Studio |
+| `openai_compatible` | `/chat/completions`      | OpenAI, OpenRouter, Together, DeepSeek, vLLM, LM Studio    |
+| `groq`              | `/chat/completions`      | Groq API with its default URL and Groq-specific API key    |
 | `anthropic`         | `/v1/messages`           | Claude models                                              |
 | `ollama`            | `/api/chat`              | any local Ollama model, no credential needed                |
 | `scripted`          | nothing                  | **test double only**, requires `LIVIUM_ALLOW_TEST_DOUBLE=1` |
@@ -106,6 +107,15 @@ refuses to run against a model the provider does not offer.
 the CLI prints a warning, and reports distinguish it from real model output.
 It exists so the loop, tools, verification, recovery and persistence can be tested
 deterministically.
+
+For Groq, select `LIVIUM_PROVIDER=groq` and provide `GROQ_API_KEY` (or the generic
+`LIVIUM_API_KEY`). The default endpoint is `https://api.groq.com/openai/v1`; model IDs
+are provider-managed and should be selected from Groq's current model catalog.
+When an HTTP 429 response includes a retry delay, Livium waits for that provider hint
+and retries within `LIVIUM_MODEL_RETRIES` (up to 60 seconds per wait); each retry is
+journalled. If the delay is longer, no hint is supplied, or retries are exhausted, the
+task reports the provider rejection instead of looping. Provider token usage is reduced
+to validated numeric counts, while malformed or unavailable usage remains unmeasured.
 
 If the provider is unreachable, the task ends `blocked`, with the real error, and
 **no completion is invented**. That is the behaviour this repository's own
@@ -132,7 +142,7 @@ A2 is separately labelled a scripted test-double run (see `docs/LIMITATIONS.md`)
 | **Step routing** | `livium events --type route_decision`; `tests/test_router.py` |
 | **Selective exposure** | context reports list the interfaces sent per step; the catalog stays lazy and the step ceiling is 10 |
 | **Approval boundary** | `livium approvals --pending` then `--approve <id> --by "Your Name"`; the operation runs once, and only after the decision |
-| **Token accounting** | `livium status` ledger rows: `prompt_tokens_actual` is `NULL` unless the provider reported usage; the estimate is a separate column |
+| **Token accounting** | `livium status` ledger rows: `prompt_tokens_actual` is `NULL` unless the provider reported usage; estimates are separate, and `model_request_attempt` journals each transport attempt |
 | **Mission acceptance tests** | `python3 -m unittest discover -s tests -t tests -p "test_mission.py"` |
 | **Network isolation** | `livium doctor` reports the mechanism it *verified*, not the one it hoped for |
 

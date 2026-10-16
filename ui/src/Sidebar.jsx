@@ -32,9 +32,9 @@ export function Sidebar({ tasks, selectedId, state, error, onSelect, onNew,
   const running = state?.backend?.running;
   const reachable = state?.provider?.ok === true;
   const isDouble = state?.provider?.is_test_double === true || state?.settings?.provider === "scripted";
-  const health = !running ? "Runtime offline" : state?.provider?.ok == null
+  const health = !state ? "Connecting to runtime" : !running ? "Runtime offline" : state?.provider?.ok == null
     ? "Checking provider" : !reachable ? "Provider unavailable"
-    : isDouble ? "Test double active" : "Ready to chat";
+    : isDouble ? "Test double active" : "Endpoint reachable";
 
   return <aside className="sidebar" aria-label="Tasks and navigation">
     <div className="sidebar-brand">
@@ -95,7 +95,9 @@ export function Sidebar({ tasks, selectedId, state, error, onSelect, onNew,
         <span className="foot-note">{theme === "dark" ? "light" : "dark"}</span></button>
       <button className={`connection-card ${running && reachable ? "online" : "offline"}`}
         type="button" onClick={() => onOpenSheet("settings")}
-        title={state?.provider?.detail || "Open provider settings"}>
+        title={state?.provider?.detail
+          ? `${health}. This probe checks the model-list endpoint, not text generation. ${state.provider.detail}`
+          : "Open provider settings"}>
         <span className={`connection-indicator ${running && reachable ? "on" : "off"}`} />
         <span className="connection-copy"><strong>{health}</strong>
           <small>{isDouble ? "scripted test double · no real model"

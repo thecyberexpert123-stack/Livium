@@ -29,7 +29,8 @@ export const KEY_VARIABLE = "LIVIUM_API_KEY";
 //: runtime is actually proving.
 export const KNOWN_VARIABLES = Object.freeze([
   "LIVIUM_PROVIDER", "LIVIUM_MODEL", "LIVIUM_BASE_URL", "LIVIUM_API_KEY",
-  "LIVIUM_MODEL_TIMEOUT", "LIVIUM_MODEL_RETRIES",
+  "LIVIUM_MODEL_TIMEOUT", "LIVIUM_MODEL_RETRIES", "LIVIUM_MAX_OUTPUT_TOKENS",
+  "LIVIUM_NVIDIA_REASONING_BUDGET", "GROQ_API_KEY",
 ]);
 
 export const HONESTY_WARNINGS = Object.freeze({
@@ -171,6 +172,10 @@ export function publicSettings(settings) {
     warnings.push("the runtime is configured for the scripted test double, so no real " +
                   "model is involved in anything this home does.");
   }
+  const safeInteger = (name, fallback, minimum, maximum) => {
+    const parsed = Number.parseInt(settings.extra?.[name] ?? "", 10);
+    return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+  };
   return {
     provider: settings.provider,
     model: settings.model,
@@ -179,6 +184,11 @@ export function publicSettings(settings) {
     // custom name. Never reflect their values back to the browser. Absence from
     // a PATCH preserves them; NAME= (empty) explicitly clears one.
     extra: Object.fromEntries(Object.keys(settings.extra ?? {}).map(name => [name, null])),
+    model_options: {
+      timeout_seconds: safeInteger("LIVIUM_MODEL_TIMEOUT", 120, 10, 900),
+      max_output_tokens: safeInteger("LIVIUM_MAX_OUTPUT_TOKENS", 1024, 128, 32768),
+      nvidia_reasoning_budget: safeInteger("LIVIUM_NVIDIA_REASONING_BUDGET", 4096, 128, 32768),
+    },
     api_key_set: key.length > 0,
     api_key_length: key.length,
     api_key_hint: hint(key),

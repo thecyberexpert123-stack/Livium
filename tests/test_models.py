@@ -33,9 +33,11 @@ from livium.models import (
     ProviderUnavailable,
     ScriptedClient,
     ToolCall,
+    _retry_after_seconds,
     build_client,
     detect_provider,
     estimate_tokens,
+    normalize_token_usage,
 )
 
 
@@ -166,7 +168,8 @@ class NvidiaRequestPacingTests(LiviumTestCase):
         body = request.call_args.args[1]
         self.assertEqual(
             body["chat_template_kwargs"],
-            {"enable_thinking": True, "force_nonempty_content": True},
+            {"enable_thinking": True, "force_nonempty_content": True,
+             "reasoning_budget": 4096},
         )
 
     def test_nvidia_http_request_reserves_a_slot_before_sending(self) -> None:
@@ -221,6 +224,35 @@ class UnreachableProviderTests(LiviumTestCase):
             client.validate()
         self.assertIn("does-not-exist", str(caught.exception))
         self.assertIn("real-model-a", str(caught.exception))
+
+
+class TokenUsageTests(LiviumTestCase):
+    def test_nested_or_malformed_counts_do_not_escape_as_numeric_usage(self) -> None:
+        usage = normalize_token_usage({
+            "prompt_tokens": {"cached_tokens": 12},
+            "input_tokens": 24,
+            "completion_tokens": {"reasoning_tokens": 6},
+            "output_tokens": 8,
+            "prompt_tokens_details": {"cached_tokens": 12},
+        })
+        self.assertEqual(usage, {"prompt_tokens": 24, "completion_tokens": 8})
+
+    def test_invalid_numeric_values_are_ignored_without_raising(self) -> None:
+        usage = normalize_token_usage({
+            "prompt_tokens": float("inf"),
+            "input_tokens": "not-a-count",
+            "completion_tokens": float("nan"),
+        })
+        self.assertEqual(usage, {})
+
+    def test_non_object_usage_is_treated_as_unavailable(self) -> None:
+        self.assertEqual(normalize_token_usage([{"prompt_tokens": 3}]), {})
+
+    def test_rate_limit_wait_is_read_from_provider_header_or_error_body(self) -> None:
+        self.assertEqual(_retry_after_seconds("4.5", "{}"), 4.5)
+        body = json.dumps({"error": {"message": "Please try again in 6.2025s."}})
+        self.assertAlmostEqual(_retry_after_seconds(None, body), 6.2025)
+        self.assertIsNone(_retry_after_seconds(None, '{"error":{"message":"quota exhausted"}}'))
 
 
 def _FakeProbe(models):

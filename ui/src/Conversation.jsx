@@ -7,6 +7,8 @@ import { Icon } from "./icons.jsx";
 // These are prompts, not canned replies. Clicking one only fills the real task
 // composer; sending still goes through Node -> Python -> the configured provider.
 const SUGGESTIONS = [
+  { icon: "search", title: "Research the web", caption: "Gather live sources and compare evidence",
+    text: "Use the available web search capability to research this question. Check multiple relevant sources, distinguish sourced facts from your interpretation, and include links to the sources in your answer." },
   { icon: "file", title: "Summarise the workspace", caption: "Turn your files into a useful brief",
     text: "Read every .txt file in the workspace and write report.md summarising them." },
   { icon: "search", title: "Inspect before you trust", caption: "Find what changed and why",
@@ -376,6 +378,9 @@ export function Conversation({ selectedId, detail, error, state, run, banner, bu
   const providerLabel = isDouble ? "Scripted test double" : state?.settings?.model ||
     state?.settings?.provider || "Configure model";
   const providerReady = state?.backend?.running && provider?.ok === true;
+  const providerStatus = !state ? "Connecting…" : !state.backend?.running ? "Runtime offline" : isDouble ? "Test mode"
+    : provider?.ok === true ? "Endpoint reachable" : provider?.ok === false
+      ? "Provider unavailable" : "Checking connection";
   const groups = transcriptGroups(detail?.messages ?? []);
 
   return <main className="chat">
@@ -386,10 +391,11 @@ export function Conversation({ selectedId, detail, error, state, run, banner, bu
         <strong>{detail?.task?.objective?.slice(0, 90) || (selectedId ? "Task in progress" : "New conversation")}</strong>
       </div>
       <div className="chat-actions">
-        <button className={`model-pill ${providerReady ? "ready" : "unavailable"}`} type="button"
-          aria-label={`Provider settings: ${providerLabel}`}
-          title={provider?.detail || "Open provider settings"} onClick={onOpenSettings}>
-          <span className="model-dot" /><span>{providerLabel}</span><Icon name="chevronDown" size={14} />
+        <button className={`model-pill ${providerReady ? "ready" : "unavailable"} ${isDouble ? "test-mode" : ""}`} type="button"
+          aria-label={`${providerStatus}: ${providerLabel}. Open provider settings`}
+          title={`${providerStatus} · ${provider?.detail || "Open provider settings"}`} onClick={onOpenSettings}>
+          <span className="model-dot" /><span className="provider-state">{providerStatus}</span>
+          <span className="model-label">{providerLabel}</span><Icon name="chevronDown" size={14} />
         </button>
         {run?.running && <button className="icon-btn stop-btn" type="button"
           title="Stop the running task" aria-label="Stop run" onClick={onStop}>

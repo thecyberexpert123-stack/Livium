@@ -3,7 +3,27 @@
 All notable changes to Agent Livium. Every entry states what was verified and how,
 because a change that was never exercised is not a change that works.
 
-## Unreleased — a chat-first Studio surface
+## Unreleased
+
+### Runtime reliability
+
+- `TokenBudget` now reads the structured calibration record that `calibrate()` writes,
+  while retaining support for legacy scalar values. Invalid records fall back to a
+  neutral factor and are identified in the context report rather than preventing task
+  startup. Provider usage is normalized to finite, non-negative token counts so nested
+  metadata cannot break accounting.
+- HTTP 429 responses with a retry hint now use a bounded, journalled retry governed by
+  `LIVIUM_MODEL_RETRIES`; a wait above 60 seconds or an exhausted retry budget remains
+  an honest provider failure.
+- Each model transport attempt is now journalled before the request, and task-level
+  model-call/failure counts include retries instead of counting only completion cycles.
+- **Verification:** 383 Python tests passed, 4 skipped. A live Groq Studio task wrote
+  and read back a workspace artifact and passed 2/2 independent acceptance checks after
+  six provider-rate-limit retries. This proves that run and model path for this task;
+  it does not prove arbitrary task quality or remove Windows' filesystem-isolation
+  limitation.
+
+### Chat-first Studio surface
 
 - Redesigned the existing React/Vite Studio as a chat-first AI workspace: searchable
   task history, provider-status shortcut, responsive welcome and prompt cards, a

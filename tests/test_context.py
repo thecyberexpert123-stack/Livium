@@ -194,6 +194,14 @@ class BudgetTests(ContextFixture):
         self.assertNotEqual(budget.calibration, before)
         stored = self.store.get_meta("token_calibration")
         self.assertIn("factor", stored)
+        reloaded = TokenBudget(self.cfg, self.store)
+        self.assertEqual(reloaded.calibration, budget.calibration)
+
+    def test_malformed_calibration_metadata_falls_back_without_blocking(self) -> None:
+        self.store.set_meta("token_calibration", {"last_observed": 120})
+        budget = TokenBudget(self.cfg, self.store)
+        self.assertEqual(budget.calibration, 1.0)
+        self.assertTrue(budget.calibration_warning)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -18,7 +18,9 @@ import unittest
 from support import LiviumTestCase
 
 from livium.agent import LiviumAgent
-from livium.models import ModelClient, ProviderUnavailable
+from livium.models import (
+    ModelClient, ModelReply, ProbeResult, ProviderRejected, ProviderUnavailable, ToolCall,
+)
 
 
 class BrokenTransport(ModelClient):
@@ -35,6 +37,66 @@ class BrokenTransport(ModelClient):
         return ProbeResult(ok=False, detail="simulated total egress failure for the test")
 
 
+class NestedUsageReply(ModelClient):
+    """A model transport fixture that returns a real-shaped reply with bad telemetry."""
+
+    provider = "usage-fixture"
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.is_test_double = True
+
+    def complete(self, conversation, tools, *, max_output_tokens=None):
+        return ModelReply(
+            text="",
+            tool_calls=[ToolCall(
+                id="finish-1", name="finish_task",
+                arguments={"summary": "The task reached its finish action.",
+                           "status": "complete"},
+            )],
+            stop_reason="tool_use",
+            usage={"prompt_tokens": {"cached_tokens": 4},
+                   "completion_tokens": {"reasoning_tokens": 7}},
+            latency_ms=1,
+            provider=self.provider,
+            model="usage-fixture",
+            is_test_double=True,
+        )
+
+    def probe(self):
+        return ProbeResult(ok=True, detail="labelled usage fixture")
+
+
+class RateLimitedOnce(ModelClient):
+    """A deterministic provider fixture for the bounded Retry-After path."""
+
+    provider = "rate-limit-fixture"
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.is_test_double = True
+        self.calls = 0
+
+    def complete(self, conversation, tools, *, max_output_tokens=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise ProviderRejected(
+                "HTTP 429 rate limited", status_code=429, retry_after=0,
+            )
+        return ModelReply(
+            text="",
+            tool_calls=[ToolCall(
+                id="finish-2", name="finish_task",
+                arguments={"summary": "The bounded retry succeeded.", "status": "complete"},
+            )],
+            stop_reason="tool_use", usage={}, latency_ms=1,
+            provider=self.provider, model="rate-limit-fixture", is_test_double=True,
+        )
+
+    def probe(self):
+        return ProbeResult(ok=True, detail="labelled rate-limit fixture")
+
+
 class AgentFixture(LiviumTestCase):
     def make_agent(self, script=None, **env):
         # The env overrides must reach the agent's own config; an earlier version of
@@ -47,6 +109,47 @@ class AgentFixture(LiviumTestCase):
 
 
 class TaskExecutionTests(AgentFixture):
+    def test_nested_provider_usage_does_not_discard_a_model_reply(self) -> None:
+        config = self.config()
+        config.ensure_dirs()
+        agent = LiviumAgent(config, client=NestedUsageReply(config))
+        self.addCleanup(agent.close)
+        agent.start()
+        agent.guardian.record_baseline(approved_by="Test Human", force=True)
+
+        run = agent.run_task("finish a task even when provider usage metadata is malformed")
+
+        self.assertIsNone(run.error)
+        self.assertTrue(run.final_summary)
+        self.assertEqual(run.model_calls, 1)
+        self.assertEqual(run.model_failures, 0)
+        self.assertEqual(run.status, "partial")  # no acceptance criteria means unverified
+        self.assertTrue(run.is_test_double)
+
+    def test_provider_rate_limit_retries_after_the_reported_wait(self) -> None:
+        from unittest.mock import patch
+
+        config = self.config(LIVIUM_MODEL_RETRIES="1")
+        config.ensure_dirs()
+        client = RateLimitedOnce(config)
+        agent = LiviumAgent(config, client=client)
+        self.addCleanup(agent.close)
+        agent.start()
+        agent.guardian.record_baseline(approved_by="Test Human", force=True)
+
+        with patch("livium.agent.time.sleep") as sleep:
+            run = agent.run_task("finish after a transient provider rate limit")
+
+        self.assertIsNone(run.error)
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(run.model_calls, 2)
+        self.assertEqual(run.model_failures, 1)
+        sleep.assert_called_once_with(0.1)
+        events = agent.store.events(event_type="model_rate_limit_retry", task_id=run.task_id)
+        self.assertEqual(len(events), 1)
+        attempts = agent.store.events(event_type="model_request_attempt", task_id=run.task_id)
+        self.assertEqual(len(attempts), 2)
+
     def test_a_real_task_runs_tools_and_is_verified_by_the_harness(self) -> None:
         agent = self.make_agent([
             {"tool_calls": [{"name": "write_file", "arguments": {

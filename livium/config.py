@@ -16,11 +16,10 @@ from typing import Any
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Providers Livium knows how to speak to. "openai_compatible" deliberately
-# covers OpenAI, OpenRouter, Groq, Together, vLLM, LM Studio and Ollama's
-# OpenAI-compatible endpoint -- they share one wire format, so one client is
-# real support for all of them rather than five half-built integrations.
-PROVIDERS = ("openai_compatible", "anthropic", "ollama", "scripted")
+# Providers Livium knows how to speak to. Groq is a named preset on the same
+# OpenAI-compatible wire format, with its own endpoint, credential and model defaults.
+# The generic provider also covers OpenAI, OpenRouter, Together, vLLM and LM Studio.
+PROVIDERS = ("openai_compatible", "groq", "anthropic", "ollama", "scripted")
 
 DEFAULT_BINARIES = (
     "python3",
@@ -207,6 +206,7 @@ class Config:
         # so operators are not forced to duplicate a key they already have.
         api_key = (
             _env("LIVIUM_API_KEY")
+            or (_env("GROQ_API_KEY") if provider == "groq" else None)
             or _env("OPENAI_API_KEY")
             or _env("ANTHROPIC_API_KEY")
             or ""
@@ -214,6 +214,7 @@ class Config:
 
         default_base = {
             "openai_compatible": "https://api.openai.com/v1",
+            "groq": "https://api.groq.com/openai/v1",
             "anthropic": "https://api.anthropic.com/v1",
             "ollama": "http://127.0.0.1:11434",
             "scripted": "",
@@ -222,6 +223,7 @@ class Config:
 
         default_model = {
             "openai_compatible": "gpt-4o-mini",
+            "groq": "openai/gpt-oss-120b",
             "anthropic": "claude-3-5-haiku-latest",
             "ollama": "llama3.1",
             "scripted": "scripted-double",

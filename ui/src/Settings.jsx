@@ -17,7 +17,8 @@ function parseExtra(text) {
 
 export function Settings({ state, onState, onError }) {
   const [form, setForm] = useState({ provider: "openai_compatible", model: "", base_url: "",
-                                      api_key: "", extra: "" });
+                                      api_key: "", timeout: "120", maxOutput: "1024",
+                                      reasoningBudget: "4096", extra: "" });
   const [dirty, setDirty] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [note, setNote] = useState("");
@@ -30,18 +31,53 @@ export function Settings({ state, onState, onError }) {
     if (!settings || dirty) return;
     setForm({ provider: settings.provider, model: settings.model,
               base_url: settings.base_url, api_key: "",
+              timeout: String(settings.model_options?.timeout_seconds ?? 120),
+              maxOutput: String(settings.model_options?.max_output_tokens ?? 1024),
+              reasoningBudget: String(settings.model_options?.nvidia_reasoning_budget ?? 4096),
               extra: Object.keys(settings.extra ?? {}).map(key =>
                 `# ${key} is set (value is write-only). Add ${key}=new-value to replace or ${key}= to clear.`
               ).join("\n") });
   }, [settings, dirty]);
   const set = (field, value) => { setDirty(true); setForm(previous => ({ ...previous, [field]: value })); };
+  function chooseProvider(value) {
+    setDirty(true);
+    setForm(previous => {
+      if (value !== "groq") return { ...previous, provider: value };
+      return {
+        ...previous,
+        provider: value,
+        base_url: "https://api.groq.com/openai/v1",
+        model: !previous.model || previous.model.startsWith("nvidia/")
+          ? "openai/gpt-oss-120b" : previous.model,
+      };
+    });
+  }
 
   async function save({ restart = true } = {}) {
     if (busy) return;
     setBusy(true); setNote(""); setValidation(null);
     try {
+      const timeout = Number(form.timeout);
+      const maxOutput = Number(form.maxOutput);
+      const reasoningBudget = Number(form.reasoningBudget);
+      if (!Number.isInteger(timeout) || timeout < 10 || timeout > 900) {
+        throw new Error("Request timeout must be between 10 and 900 seconds.");
+      }
+      if (!Number.isInteger(maxOutput) || maxOutput < 128 || maxOutput > 32768) {
+        throw new Error("Response token limit must be between 128 and 32,768.");
+      }
+      if (!Number.isInteger(reasoningBudget) || reasoningBudget < 128 || reasoningBudget > 32768) {
+        throw new Error("NVIDIA reasoning budget must be between 128 and 32,768 tokens.");
+      }
+      if (form.provider === "groq" && settings?.api_key_set && settings.provider !== "groq" && !form.api_key) {
+        throw new Error("Enter your Groq API key before switching; the currently saved key belongs to another provider.");
+      }
+      const extra = parseExtra(form.extra);
+      extra.LIVIUM_MODEL_TIMEOUT = String(timeout);
+      extra.LIVIUM_MAX_OUTPUT_TOKENS = String(maxOutput);
+      extra.LIVIUM_NVIDIA_REASONING_BUDGET = String(reasoningBudget);
       const patch = { provider: form.provider, model: form.model, base_url: form.base_url,
-                      extra: parseExtra(form.extra), restart };
+                      extra, restart };
       if (form.api_key) patch.api_key = form.api_key;
       const result = await write("/studio/api/settings", patch);
       setForm(previous => ({ ...previous, api_key: "" }));
@@ -77,25 +113,55 @@ export function Settings({ state, onState, onError }) {
     } catch (error) { onError(error.message); }
   }
   const provider = validation ?? state?.provider ?? {};
+  const nvidiaEndpoint = form.provider === "openai_compatible" && (() => {
+    try { return new URL(form.base_url).hostname.toLowerCase() === "integrate.api.nvidia.com"; }
+    catch { return form.model.toLowerCase().includes("nemotron-3-ultra-550b-a55b"); }
+  })();
+  const providerHelp = {
+    openai_compatible: "For NVIDIA, OpenAI, OpenRouter, and compatible hosted or local APIs. Use the exact model ID and the provider’s API URL.",
+    groq: "Groq uses its OpenAI-compatible API. Enter your Groq API key; choose an active model ID from Groq’s model catalog.",
+    anthropic: "Uses Anthropic’s Messages API. Enter an Anthropic model ID; the API key stays private.",
+    ollama: "For a local Ollama server. The usual URL is http://localhost:11434; a cloud API key is not needed.",
+    scripted: "Development double only. It does not produce real model output and should not be used to evaluate Livium’s real task execution.",
+  }[form.provider];
 
   return <div className="sheet-body">
-    <div className="card wide"><h4>Provider</h4>
-      <p className="hint">The key is written to <code>{state?.studio?.home ?? "<studio home>"}/settings.json</code>
-        with mode 0600 and passed to the runtime in its environment. The API never returns
-        the value; the home browser also refuses that file, including raw download.</p>
+    <div className="card wide model-health">
+      <div><h4>Model connection</h4><p className="hint">{settings?.model || "No model configured"}
+        {settings?.base_url ? ` · ${settings.base_url}` : ""}</p></div>
+      <Badge tone={provider.ok === true ? "ok" : provider.ok === false ? "bad" : "warn"}>
+        {provider.ok === true ? "Endpoint reachable" : provider.ok === false ? "Unavailable" : "Not checked"}
+      </Badge>
+      <p className="hint model-health-note">Reachable means the model-list endpoint answered. Send a short prompt to confirm generation works.</p>
+    </div>
+
+    <div className="card wide"><h4>Model setup</h4>
+      <p className="hint">Set one provider and model. Credentials stay private; advanced runtime controls are below.</p>
       <form className="settings-grid" onSubmit={event => { event.preventDefault(); save(); }}>
-        <label>provider
-          <select value={form.provider} onChange={event => set("provider", event.target.value)}>
-            <option value="openai_compatible">openai_compatible (OpenAI or custom)</option>
-            <option value="anthropic">anthropic</option>
-            <option value="ollama">ollama (local)</option>
-            <option value="scripted">scripted (test double; no real model)</option>
+        <label>Provider
+          <select value={form.provider} onChange={event => chooseProvider(event.target.value)}>
+            <option value="openai_compatible">OpenAI-compatible API</option>
+            <option value="groq">Groq</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="scripted">Scripted (development only)</option>
           </select>
         </label>
-        <label>model <input value={form.model} onChange={event => set("model", event.target.value)}
-          placeholder="gpt-4o-mini / claude / llama3.1" /></label>
-        <label>base URL <input value={form.base_url} onChange={event => set("base_url", event.target.value)}
-          placeholder="https://api.openai.com/v1 (blank = default)" /></label>
+        <p className="hint provider-help">{providerHelp}</p>
+        <label>Model ID <input value={form.model} onChange={event => set("model", event.target.value)}
+          placeholder={form.provider === "groq" ? "openai/gpt-oss-120b" : form.provider === "anthropic" ? "claude-sonnet-4-5" : form.provider === "ollama" ? "llama3.1" : "provider/model-name"} /></label>
+        <label>API base URL <input value={form.base_url} onChange={event => set("base_url", event.target.value)}
+          placeholder={form.provider === "ollama" ? "http://localhost:11434" : "https://api.provider.com/v1"} />
+          <em>Leave blank to use the provider default.</em></label>
+        <label>Request timeout <em>seconds · allows slower model responses</em>
+          <input type="number" min="10" max="900" step="1" value={form.timeout}
+            onChange={event => set("timeout", event.target.value)} /></label>
+        <label>Response token limit <em>maximum generated tokens per call</em>
+          <input type="number" min="128" max="32768" step="1" value={form.maxOutput}
+            onChange={event => set("maxOutput", event.target.value)} /></label>
+        {nvidiaEndpoint && <label>NVIDIA reasoning budget <em>limits internal reasoning tokens per request</em>
+          <input type="number" min="128" max="32768" step="1" value={form.reasoningBudget}
+            onChange={event => set("reasoningBudget", event.target.value)} /></label>}
         <label className="wide">API key
           <span className="row"><input aria-label="API key" type={showKey ? "text" : "password"}
             autoComplete="off" value={form.api_key} onChange={event => set("api_key", event.target.value)}
@@ -106,20 +172,22 @@ export function Settings({ state, onState, onError }) {
               {showKey ? "hide" : "show"}</button>
             <button type="button" className="ghost" onClick={clearKey}>clear</button></span>
         </label>
+        {form.provider === "groq" && settings?.api_key_set && settings?.provider !== "groq" &&
+          <p className="hint provider-help">You’re switching providers. Enter your Groq key above to replace the currently stored key.</p>}
         <div className="row wide">
           <button type="submit" disabled={busy}>Save and restart the runtime</button>
-          <button type="button" className="ghost" disabled={busy} onClick={() => save({ restart: false })}>
-            Save only</button>
-          <button type="button" className="ghost" disabled={busy} onClick={() => save()}>
-            Validate against the provider</button>
           <button type="button" className="ghost" onClick={probe}>
             Re-probe now, without restarting</button>
+          <button type="button" className="link" disabled={busy} onClick={() => save({ restart: false })}>
+            Save without restarting</button>
         </div>
       </form>
       {note && <p className="hint" role="status">{note}</p>}
     </div>
-    <div className="grid-3">
-      <div className="card"><h4>What the runtime says</h4><KV rows={[
+    <details className="advanced-settings">
+      <summary>Advanced diagnostics and environment</summary>
+      <div className="grid-3">
+      <div className="card"><h4>Runtime diagnostics</h4><KV rows={[
         ["configured", `${settings?.provider || "unknown"}${settings?.model ? ` / ${settings.model}` : ""}`],
         ["base url", settings?.base_url || "(provider default)"],
         ["api key", settings?.api_key_set ? `${settings.api_key_hint} · sha256 ${state?.key_fingerprint}` : "not set"],
@@ -149,5 +217,6 @@ export function Settings({ state, onState, onError }) {
         restart the runtime</button><button type="button" className="link"
         onClick={() => backendLog.refetch()}>reload log</button></div>
     </div>
+    </details>
   </div>;
 }
